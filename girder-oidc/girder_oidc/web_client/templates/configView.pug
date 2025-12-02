@@ -1,0 +1,86 @@
+.g-config-breadcrumb-container
+
+.g-oidc-config-container
+  .panel.panel-default
+    .panel-heading
+      h4 OIDC/Keycloak Configuration
+    
+    .panel-body
+      .alert.g-oidc-save-message.hidden
+      
+      form.form-horizontal(role="form")
+        .form-group
+          label.col-sm-3.control-label Keycloak URL (Internal)
+          .col-sm-6
+            input.form-control(type="text", name="keycloakUrl", value=keycloakUrl)
+            small.form-text.text-muted
+              | Internal URL for server-to-server communication (e.g., https://keycloak:8443 in Docker)
+        
+        .form-group
+          label.col-sm-3.control-label Keycloak Public URL
+          .col-sm-6
+            input.form-control(type="text", name="keycloakPublicUrl", value=keycloakPublicUrl)
+            small.form-text.text-muted
+              | Public URL for browser redirects (e.g., https://localhost:8443 or https://keycloak.example.com)
+        
+        .form-group
+          label.col-sm-3.control-label Keycloak Realm
+          .col-sm-6
+            input.form-control(type="text", name="keycloakRealm", value=keycloakRealm)
+            small.form-text.text-muted
+              | Keycloak realm name
+        
+        .form-group
+          label.col-sm-3.control-label Client ID
+          .col-sm-6
+            input.form-control(type="text", name="clientId", value=clientId)
+            small.form-text.text-muted
+              | OIDC client ID from Keycloak
+        
+        .form-group
+          label.col-sm-3.control-label Client Secret
+          .col-sm-6
+            input.form-control(type="password", name="clientSecret")
+            small.form-text.text-muted
+              | OIDC client secret from Keycloak (not displayed)
+        
+        .form-group
+          .col-sm-offset-3.col-sm-9
+            label
+              input(type="checkbox", name="enable", checked=enable)
+              | Enable OIDC Authentication
+        
+        .form-group
+          .col-sm-offset-3.col-sm-9
+            label
+              input(type="checkbox", name="autoCreateUsers", checked=autoCreateUsers)
+              | Automatically Create Users
+            small.form-text.text-muted
+              | Create Girder users automatically from OIDC login
+        
+        .form-group
+          .col-sm-offset-3.col-sm-9
+            label
+              input(type="checkbox", name="allowRegistration", checked=allowRegistration)
+              | Allow Registration from OIDC
+            small.form-text.text-muted
+              | Allow OIDC users to register new accounts
+        
+        .form-group
+          .col-sm-offset-3.col-sm-9
+            label
+              input(type="checkbox", name="ignoreRegistrationPolicy", checked=ignoreRegistrationPolicy)
+              | Ignore Closed Registration Policy
+            small.form-text.text-muted
+              | Allow OIDC users to create accounts even when registration is closed
+        
+        .form-group
+          .col-sm-offset-3.col-sm-6
+            button.btn.btn-primary.g-oidc-save-config(type="button")
+              i.icon-save
+              | Save Configuration
+            button.btn.btn-default.g-oidc-test-connection(type="button", style="margin-left: 10px;")
+              i.icon-link
+              | Test Connection
+        
+        .alert.g-oidc-test-message.hidden(style="margin-top: 10px;")

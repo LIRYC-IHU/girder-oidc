@@ -1,0 +1,24 @@
+{
+  "name": "@girder/oidc",
+  "version": "0.0.0",
+  "description": "Girder plugin for OIDC/Keycloak authentication",
+  "homepage": "https://github.com/girder/girder-oidc",
+  "bugs": {
+    "url": "https://github.com/girder/girder-oidc/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/girder/girder-oidc.git"
+  },
+  "peerDependencies": {
+    "@girder/core": "*"
+  },
+  "girderPlugin": {
+    "name": "oidc",
+    "main": "./main.js"
+  },
+  "devDependencies": {
+    "stylus": "^0.59.0"
+  }
+}

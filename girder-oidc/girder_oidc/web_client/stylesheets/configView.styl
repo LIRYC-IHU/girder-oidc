@@ -1,0 +1,83 @@
+.g-oidc-config-container
+  margin-top: 20px
+  
+  .panel
+    border-radius: 4px
+    
+    .panel-heading
+      background-color: #f5f5f5
+      border: 1px solid #ddd
+      border-radius: 4px 4px 0 0
+      padding: 10px 15px
+      
+      h4
+        margin: 0
+        font-size: 16px
+    
+    .panel-body
+      padding: 20px
+      
+      .form-group
+        margin-bottom: 15px
+        
+        label.control-label
+          font-weight: 600
+          color: #333
+        
+        input[type="text"],
+        input[type="password"]
+          border: 1px solid #ddd
+          border-radius: 4px
+          padding: 6px 12px
+          
+          &:focus
+            border-color: #0275d8
+            box-shadow: inset 0 1px 1px rgba(0,0,0,.075), 0 0 0 0.2rem rgba(2,117,216,.25)
+        
+        .form-text
+          display: block
+          margin-top: 5px
+          font-size: 12px
+          color: #6c757d
+      
+      .g-oidc-save-message,
+      .g-oidc-test-message
+        transition: all 0.3s ease
+        border-radius: 4px
+        padding: 12px 15px
+        
+        &.alert-success
+          background-color: #d4edda
+          color: #155724
+          border: 1px solid #c3e6cb
+        
+        &.alert-danger
+          background-color: #f8d7da
+          color: #721c24
+          border: 1px solid #f5c6cb
+      
+      button
+        border-radius: 4px
+        padding: 6px 12px
+        font-weight: 500
+        
+        i
+          margin-right: 6px
+        
+        &.btn-primary
+          background-color: #0275d8
+          border-color: #0275d8
+          color: white
+          
+          &:hover
+            background-color: #0260d0
+            border-color: #0260d0
+        
+        &.btn-default
+          background-color: #e2e6ea
+          border-color: #dae0e5
+          color: #333
+          
+          &:hover
+            background-color: #d8dfe6
+            border-color: #dae0e5

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
+
+[project]
+name = "girder-oidc"
+dynamic = ["version"]
+description = "Girder plugin for OIDC/Keycloak authentication"
+readme = "README.md"
+license = {text = "Apache 2.0"}
+authors = [
+    {name = "Girder Contributors"}
+]
+keywords = ["girder", "oidc", "keycloak", "authentication"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "girder>=3.0.0",
+    "python-jose[cryptography]",
+    "requests",
+]
+
+[project.urls]
+Homepage = "https://github.com/girder/girder-oidc"

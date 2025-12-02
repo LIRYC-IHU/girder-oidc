@@ -1,0 +1,29 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+node_modules/
+.venv/
+venv/
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Girder specific
+girder/web/static/built/
+girder/web/static/src/lib/

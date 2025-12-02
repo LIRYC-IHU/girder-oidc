@@ -1,0 +1,66 @@
+services:
+  girder:
+    build: .
+    container_name: girder-kitware
+    ports:
+      - "8080:8080"
+    command: -d mongodb://mongo:27017/girder --host 0.0.0.0
+    depends_on:
+      - mongo
+      - keycloak
+    volumes:
+      - ./girder-oidc:/workspace/girder-oidc
+      - girder-assetstore:/assetstore
+      - $TLS_CERT/rootCA.pem:/etc/ssl/certs/mkcert-ca.pem:ro
+    networks:
+      - girder-network
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    environment:
+      KEYCLOAK_URL: https://keycloak:8443
+      KEYCLOAK_PUBLIC_URL: https://localhost:8443
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/mkcert-ca.pem
+
+  mongo:
+    image: mongo:5.0
+    container_name: girder-mongo
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: girder
+    networks:
+      - girder-network
+    restart: unless-stopped
+
+  keycloak:
+    image: keycloak/keycloak:latest
+    container_name: girder-keycloak
+    ports:
+      - "8443:8443"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/cert.pem
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/key.pem
+      KC_HOSTNAME: https://localhost:8443
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_PROXY: edge
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+      - $TLS_CERT/cert.pem:/opt/keycloak/conf/cert.pem:ro
+      - $TLS_CERT/key.pem:/opt/keycloak/conf/key.pem:ro
+    networks:
+      - girder-network
+    restart: unless-stopped
+    command:
+      - start-dev
+
+volumes:
+  girder-assetstore:
+  mongo-data:
+  keycloak-data:
+
+networks:
+  girder-network:
+    driver: bridge
