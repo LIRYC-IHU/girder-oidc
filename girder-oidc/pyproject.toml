@@ -12,7 +12,7 @@ description = "Girder plugin for OIDC/Keycloak authentication"
 readme = "README.md"
 license = {text = "Apache 2.0"}
 authors = [
-    {name = "Girder Contributors"}
+    {name = "Josselin Duchateau"},
 ]
 keywords = ["girder", "oidc", "keycloak", "authentication"]
 classifiers = [

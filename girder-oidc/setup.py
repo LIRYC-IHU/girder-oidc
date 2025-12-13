@@ -2,9 +2,9 @@ from setuptools import setup, find_packages
 
 setup(
     name='girder-oidc',
-    version='1.0.0',
+    version='0.0.1',
     description='Girder plugin for OIDC/Keycloak authentication',
-    author='Girder Contributors',
+    author='Josselin Duchateau',
     license='Apache 2.0',
     packages=find_packages(),
     install_requires=[
