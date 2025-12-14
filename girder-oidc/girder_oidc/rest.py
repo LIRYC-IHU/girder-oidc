@@ -28,6 +28,7 @@ class Oidc(Resource):
         self.route('GET', ('login',), self.getLoginUrl)
         self.route('GET', ('callback',), self.callback)
         self.route('GET', ('is-oidc-user',), self.isOidcUser)
+        self.route('POST', ('token',), self.exchangeToken)
     
     def _createStateToken(self, redirect):
         """
@@ -214,3 +215,61 @@ class Oidc(Resource):
             return {'isOidcUser': isOidc}
         except Exception as e:
             raise RestException(f'Failed to check OIDC user status: {str(e)}', code=500)
+    
+    @access.public
+    @autoDescribeRoute(
+        Description('Exchange an OIDC access token for a Girder authentication token.')
+        .param('access_token', 'OIDC access token (from direct access grant flow)', dataType='string')
+    )
+    def exchangeToken(self, access_token):
+        """
+        Exchange an OIDC access token (from direct access grant flow) for a Girder token.
+        
+        This endpoint allows clients to authenticate using OIDC direct access grant flow:
+        1. Client authenticates with Keycloak using username/password
+        2. Client receives OIDC access_token
+        3. Client sends access_token to this endpoint
+        4. Endpoint returns Girder authentication token
+        
+        Usage (with curl):
+            # 1. Get OIDC token from Keycloak
+            OIDC_TOKEN=$(curl -X POST https://keycloak/token \
+              -d grant_type=password \
+              -d client_id=girder \
+              -d client_secret=secret \
+              -d username=user \
+              -d password=pass | jq -r .access_token)
+            
+            # 2. Exchange for Girder token
+            curl -X POST https://girder/api/v1/oidc/token \
+              -d access_token=$OIDC_TOKEN
+        """
+        if not access_token:
+            raise RestException('Missing access_token parameter', code=400)
+        
+        if not Setting().get(PluginSettings.ENABLE):
+            raise RestException('OIDC is not enabled', code=403)
+        
+        try:
+            provider = KeycloakProvider()
+            
+            # Validate token and get user info
+            userInfo = provider.getUserInfo(access_token)
+            
+            # Create or update Girder user
+            user = provider.createOrUpdateUser(userInfo)
+            
+            # Create authentication token
+            authToken = Token().createToken(user=user, days=0.25)
+            
+            return {
+                'authToken': authToken['_id'],
+                'userId': user['_id'],
+                'login': user['login'],
+                'email': user['email']
+            }
+            
+        except RestException:
+            raise
+        except Exception as e:
+            raise RestException(f'Token exchange failed: {str(e)}', code=502)

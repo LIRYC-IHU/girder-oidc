@@ -2,3 +2,4 @@
 .venv/
 .DS_Store
 Thumbs.db
+pypi_token.txt

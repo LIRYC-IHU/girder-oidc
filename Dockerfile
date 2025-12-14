@@ -1,6 +1,6 @@
 FROM girder/girder:latest-py3
 
-# Install homepage plugin
+# Install homepage & oidc plugins
 RUN pip install girder-homepage girder-oidc \
     && girder build
 

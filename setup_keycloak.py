@@ -197,7 +197,7 @@ class KeycloakSetup:
                 'publicClient': False,
                 'standardFlowEnabled': True,
                 'implicitFlowEnabled': False,
-                'directAccessGrantsEnabled': False,
+                'directAccessGrantsEnabled': True,
                 'serviceAccountsEnabled': False,
                 'protocol': 'openid-connect',
                 'attributes': {
