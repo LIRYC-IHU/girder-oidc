@@ -9,8 +9,9 @@ from girder.api.describe import Description, autoDescribeRoute
 from girder.api.rest import Resource, getApiUrl
 from girder.api import access
 from girder.models.setting import Setting
-from girder.models.user import User
+from girder.models.item import Item
 from girder.models.token import Token
+from girder_jobs.models.job import Job
 
 from .providers import KeycloakProvider
 from .settings import PluginSettings
@@ -28,7 +29,7 @@ class Oidc(Resource):
         self.route('GET', ('login',), self.getLoginUrl)
         self.route('GET', ('callback',), self.callback)
         self.route('GET', ('is-oidc-user',), self.isOidcUser)
-        self.route('POST', ('token',), self.exchangeToken)
+        self.route('GET', ('token',), self.exchangeToken)
     
     def _createStateToken(self, redirect):
         """
@@ -219,16 +220,17 @@ class Oidc(Resource):
     @access.public
     @autoDescribeRoute(
         Description('Exchange an OIDC access token for a Girder authentication token.')
-        .param('access_token', 'OIDC access token (from direct access grant flow)', dataType='string')
+        .param('Authorization', 'Bearer token (OIDC access token from direct access grant flow)', 
+               paramType='header', required=True)
     )
-    def exchangeToken(self, access_token):
+    def exchangeToken(self):
         """
         Exchange an OIDC access token (from direct access grant flow) for a Girder token.
         
         This endpoint allows clients to authenticate using OIDC direct access grant flow:
         1. Client authenticates with Keycloak using username/password
         2. Client receives OIDC access_token
-        3. Client sends access_token to this endpoint
+        3. Client sends access_token via Authorization header
         4. Endpoint returns Girder authentication token
         
         Usage (with curl):
@@ -241,11 +243,15 @@ class Oidc(Resource):
               -d password=pass | jq -r .access_token)
             
             # 2. Exchange for Girder token
-            curl -X POST https://girder/api/v1/oidc/token \
-              -d access_token=$OIDC_TOKEN
+            curl -X GET https://girder/api/v1/oidc/token \
+              -H "Authorization: Bearer $OIDC_TOKEN"
         """
-        if not access_token:
-            raise RestException('Missing access_token parameter', code=400)
+        # Get token from Authorization header
+        authHeader = cherrypy.request.headers.get('Authorization', '')
+        if not authHeader.startswith('Bearer '):
+            raise RestException('Missing or invalid Authorization header. Use: Authorization: Bearer <token>', code=400)
+        
+        access_token = authHeader[7:]  # Remove 'Bearer ' prefix
         
         if not Setting().get(PluginSettings.ENABLE):
             raise RestException('OIDC is not enabled', code=403)
@@ -260,7 +266,7 @@ class Oidc(Resource):
             user = provider.createOrUpdateUser(userInfo)
             
             # Create authentication token
-            authToken = Token().createToken(user=user, days=0.25)
+            authToken = Token().createToken(user=user, days=365)
             
             return {
                 'authToken': authToken['_id'],
@@ -273,3 +279,4 @@ class Oidc(Resource):
             raise
         except Exception as e:
             raise RestException(f'Token exchange failed: {str(e)}', code=502)
+

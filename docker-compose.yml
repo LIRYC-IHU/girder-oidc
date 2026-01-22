@@ -10,7 +10,8 @@ services:
       - keycloak
     volumes:
       - ./girder-oidc:/workspace/girder-oidc
-      - girder-assetstore:/assetstore
+      - ./logs:/root/.girder/logs
+      - girder-assetstore:/var/girder/assetstore
       - $TLS_CERT/rootCA.pem:/etc/ssl/certs/mkcert-ca.pem:ro
     networks:
       - girder-network
