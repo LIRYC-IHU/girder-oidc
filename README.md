@@ -129,3 +129,6 @@ ls -la $TLS_CERT/{cert.pem,key.pem,rootCA.pem}
 **Browser SSL warnings (self-signed certs):**
 - Expected for development; browser allows proceeding after warning
 - For smooth experience, import `rootCA.pem` into system keychain (macOS: `Keychain Access → Certificate Assistant → Import`)
+
+# Funding
+This project was financed by the french Agence Nationale de la Recherche (ANR) - ANR-23-RHUS-0015
