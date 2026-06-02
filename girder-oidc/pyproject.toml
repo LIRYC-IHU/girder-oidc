@@ -8,24 +8,28 @@ fallback_version = "0.0.0"
 [project]
 name = "girder-oidc"
 dynamic = ["version"]
-description = "Girder plugin for OIDC/Keycloak authentication"
+description = "Authenticate Girder users through an OpenID Connect provider."
 readme = "README.md"
 license = {text = "Apache 2.0"}
 authors = [
     {name = "Josselin Duchateau"},
 ]
-keywords = ["girder", "oidc", "keycloak", "authentication"]
+keywords = ["girder", "oidc", "openid connect", "authentication"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Apache Software License",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
 ]
+requires-python = ">=3.10"
 dependencies = [
-    "girder>=3.0.0",
-    "python-jose[cryptography]",
+    "girder>=5",
+    "authlib",
     "requests",
 ]
+
+[project.entry-points."girder.plugin"]
+oidc = "girder_oidc:OidcPlugin"
 
 [project.urls]
 Homepage = "https://github.com/girder/girder-oidc"

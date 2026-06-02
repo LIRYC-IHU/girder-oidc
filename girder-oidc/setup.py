@@ -1,15 +1,16 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 setup(
     name='girder-oidc',
-    version='0.0.2',
-    description='Girder plugin for OIDC/Keycloak authentication',
+    version='0.1.0',
+    description='Authenticate Girder users through an OpenID Connect provider.',
     author='Josselin Duchateau',
     license='Apache 2.0',
-    packages=find_packages(),
+    packages=find_packages(exclude=['plugin_tests']),
+    python_requires='>=3.10',
     install_requires=[
-        'girder>=3.0.0',
-        'python-jose[cryptography]',
+        'girder>=5',
+        'authlib',
         'requests',
     ],
     entry_points={
@@ -18,4 +19,5 @@ setup(
         ],
     },
     include_package_data=True,
+    zip_safe=False,
 )

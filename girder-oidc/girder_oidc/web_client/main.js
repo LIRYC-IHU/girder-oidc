@@ -1,23 +1,16 @@
-import { setCurrentToken } from '@girder/core/auth';
-
-console.log('OIDC plugin main.js loading');
-
 import './routes';
 
-// Extends and overrides API
+// Extends and overrides core views.
 import './views/LoginView';
-import './views/SettingsInterceptor';
+import './views/UserAccountView';
 
-console.log('OIDC plugin main.js loaded successfully');
-
-// If the current URL contains a `girderToken` query parameter, set the current token to its value
+// If the URL carries a `girderToken` query param, we were just redirected back
+// from a successful OIDC login: persist the token and strip it from the URL.
 const girderToken = new URLSearchParams(window.location.search).get('girderToken');
 
 if (girderToken) {
-    // This means we have been redirected from a successful OIDC login.
-    // Save the token, and delete the query parameter from the URL.
     window.localStorage.setItem('girderToken', girderToken);
-    setCurrentToken(girderToken);
+    girder.auth.setCurrentToken(girderToken);
 
     const queryParams = new URLSearchParams(window.location.search);
     queryParams.delete('girderToken');

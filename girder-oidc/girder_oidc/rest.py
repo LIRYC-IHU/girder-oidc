@@ -1,282 +1,242 @@
-import cherrypy
 import datetime
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from girder import events
-from girder.constants import AccessType, SortDir
-from girder.exceptions import RestException, ValidationException
+import cherrypy
+
+from girder.api import access
 from girder.api.describe import Description, autoDescribeRoute
 from girder.api.rest import Resource, getApiUrl
-from girder.api import access
+from girder.constants import AccessType
+from girder.exceptions import RestException
 from girder.models.setting import Setting
-from girder.models.item import Item
 from girder.models.token import Token
-from girder_jobs.models.job import Job
+from girder.models.user import User
 
-from .providers import KeycloakProvider
+from .client import OidcClient, generate_nonce, generate_pkce_pair, probeProvider
 from .settings import PluginSettings
+from .user import claimGrantsAdmin, createOrReuseUser
+
+
+def _safeRedirect(redirect):
+    """Reject open-redirect attempts: only same-origin absolute paths allowed."""
+    if not redirect:
+        return '/'
+    parsed = urlparse(redirect)
+    if parsed.scheme or parsed.netloc or not redirect.startswith('/') \
+            or redirect.startswith('//'):
+        raise RestException(
+            'Redirect must be a same-origin absolute path (e.g. "/").', code=400)
+    return redirect
 
 
 class Oidc(Resource):
-    """REST API endpoints for OIDC authentication."""
-    
+    """REST endpoints for OpenID Connect login."""
+
     def __init__(self):
         super().__init__()
         self.resourceName = 'oidc'
-        
+
+        self.route('GET', ('config',), self.getPublicConfig)
         self.route('GET', ('configuration',), self.getConfiguration)
         self.route('PUT', ('configuration',), self.setConfiguration)
-        self.route('GET', ('login',), self.getLoginUrl)
+        self.route('POST', ('configuration', 'test'), self.testConfiguration)
+        self.route('GET', ('login',), self.login)
         self.route('GET', ('callback',), self.callback)
-        self.route('GET', ('is-oidc-user',), self.isOidcUser)
-        self.route('GET', ('token',), self.exchangeToken)
-    
-    def _createStateToken(self, redirect):
-        """
-        Create a CSRF token for the OIDC flow.
-        
-        :param redirect: URL to redirect to after authentication
-        :returns: State token
-        """
-        csrfToken = Token().createToken(days=0.25)
-        
-        # The delimiter is arbitrary, but a dot doesn't need to be URL-encoded
-        state = f'{csrfToken["_id"]}.{redirect}'
-        return state
-    
-    def _validateStateToken(self, state):
-        """
-        Validate and consume a CSRF token.
-        
-        :param state: State token from OIDC callback
-        :returns: Redirect URL
-        :raises RestException: If token is invalid or expired
-        """
-        csrfTokenId, _, redirect = state.partition('.')
-        
-        token = Token().load(csrfTokenId, objectId=False, level=AccessType.READ)
-        if token is None:
-            raise RestException('Invalid CSRF token', code=403)
-        
-        Token().remove(token)
-        
-        if token['expires'] < datetime.datetime.utcnow():
-            raise RestException('Expired CSRF token', code=403)
-        
-        if not redirect:
-            raise RestException('No redirect location in state', code=400)
-        
-        return redirect
-    
+
+    def _redirectUri(self):
+        return '/'.join((getApiUrl(), 'oidc', 'callback'))
+
+    @access.public
+    @autoDescribeRoute(
+        Description('Get the public OIDC config used to render the login button.')
+    )
+    def getPublicConfig(self):
+        settings = Setting()
+        return {
+            'enabled': settings.get(PluginSettings.ENABLED),
+            'buttonLabel': settings.get(PluginSettings.BUTTON_LABEL),
+        }
+
     @access.admin
     @autoDescribeRoute(
-        Description('Get OIDC configuration (without secrets).')
+        Description('Get the full OIDC configuration (secret omitted).')
     )
     def getConfiguration(self):
-        """Get OIDC configuration for the admin panel."""
+        settings = Setting()
         return {
-            'keycloakUrl': Setting().get(PluginSettings.KEYCLOAK_URL) or '',
-            'keycloakPublicUrl': Setting().get(PluginSettings.KEYCLOAK_PUBLIC_URL) or '',
-            'keycloakRealm': Setting().get(PluginSettings.KEYCLOAK_REALM) or '',
-            'clientId': Setting().get(PluginSettings.CLIENT_ID) or '',
-            'enable': Setting().get(PluginSettings.ENABLE) or False,
-            'autoCreateUsers': Setting().get(PluginSettings.AUTO_CREATE_USERS) or False,
-            'allowRegistration': Setting().get(PluginSettings.ALLOW_REGISTRATION) or False,
-            'ignoreRegistrationPolicy': Setting().get(PluginSettings.IGNORE_REGISTRATION_POLICY) or False,
+            'enabled': settings.get(PluginSettings.ENABLED),
+            'clientId': settings.get(PluginSettings.CLIENT_ID),
+            'clientSecretSet': bool(settings.get(PluginSettings.CLIENT_SECRET)),
+            'publicUrl': settings.get(PluginSettings.PUBLIC_URL),
+            'internalUrl': settings.get(PluginSettings.INTERNAL_URL),
+            'scopes': settings.get(PluginSettings.SCOPES),
+            'buttonLabel': settings.get(PluginSettings.BUTTON_LABEL),
+            'autoCreateUsers': settings.get(PluginSettings.AUTO_CREATE_USERS),
+            'ignoreRegistrationPolicy': settings.get(
+                PluginSettings.IGNORE_REGISTRATION_POLICY),
+            'adminClaim': settings.get(PluginSettings.ADMIN_CLAIM),
+            'adminClaimValue': settings.get(PluginSettings.ADMIN_CLAIM_VALUE),
         }
-    
+
     @access.admin
     @autoDescribeRoute(
-        Description('Set OIDC configuration.')
-        .param('keycloakUrl', 'Keycloak internal URL (for server-to-server communication)', dataType='string')
-        .param('keycloakPublicUrl', 'Keycloak public URL (for browser redirects)', dataType='string')
-        .param('keycloakRealm', 'Keycloak realm name', dataType='string')
-        .param('clientId', 'OIDC client ID', dataType='string')
-        .param('clientSecret', 'OIDC client secret', dataType='string')
-        .param('enable', 'Enable OIDC authentication', dataType='boolean')
-        .param('autoCreateUsers', 'Automatically create users', dataType='boolean')
-        .param('allowRegistration', 'Allow registration from OIDC', dataType='boolean')
-        .param('ignoreRegistrationPolicy', 'Ignore closed registration policy', dataType='boolean')
+        Description('Update the OIDC configuration.')
+        .param('enabled', 'Enable OIDC login.', dataType='boolean', required=False)
+        .param('clientId', 'OAuth2 client ID.', required=False)
+        .param('clientSecret', 'OAuth2 client secret (leave blank to keep current).',
+               required=False)
+        .param('publicUrl', 'Browser-facing provider base URL (the issuer).',
+               required=False)
+        .param('internalUrl', 'Server-to-server provider base URL (optional).',
+               required=False)
+        .param('scopes', 'Space-separated OAuth2 scopes.', required=False)
+        .param('buttonLabel', 'Login button label.', required=False)
+        .param('autoCreateUsers', 'Create Girder accounts for new identities.',
+               dataType='boolean', required=False)
+        .param('ignoreRegistrationPolicy', 'Allow creation even if registration '
+               'policy is closed.', dataType='boolean', required=False)
+        .param('adminClaim', 'ID-token claim that confers site-admin (blank to '
+               'disable admin mapping).', required=False)
+        .param('adminClaimValue', 'Required value of the admin claim (blank means '
+               'any truthy value).', required=False)
     )
-    def setConfiguration(self, keycloakUrl, keycloakPublicUrl, keycloakRealm, clientId, clientSecret,
-                        enable, autoCreateUsers, allowRegistration, ignoreRegistrationPolicy):
-        """Set OIDC configuration (admin only)."""
-        Setting().set(PluginSettings.KEYCLOAK_URL, keycloakUrl)
-        Setting().set(PluginSettings.KEYCLOAK_PUBLIC_URL, keycloakPublicUrl)
-        Setting().set(PluginSettings.KEYCLOAK_REALM, keycloakRealm)
-        Setting().set(PluginSettings.CLIENT_ID, clientId)
-        Setting().set(PluginSettings.CLIENT_SECRET, clientSecret)
-        Setting().set(PluginSettings.ENABLE, enable)
-        Setting().set(PluginSettings.AUTO_CREATE_USERS, autoCreateUsers)
-        Setting().set(PluginSettings.ALLOW_REGISTRATION, allowRegistration)
-        Setting().set(PluginSettings.IGNORE_REGISTRATION_POLICY, ignoreRegistrationPolicy)
-        
+    def setConfiguration(self, enabled, clientId, clientSecret, publicUrl,
+                         internalUrl, scopes, buttonLabel, autoCreateUsers,
+                         ignoreRegistrationPolicy, adminClaim, adminClaimValue):
+        settings = Setting()
+        if enabled is not None:
+            settings.set(PluginSettings.ENABLED, enabled)
+        if clientId is not None:
+            settings.set(PluginSettings.CLIENT_ID, clientId)
+        # Only overwrite the secret when a non-empty value is supplied.
+        if clientSecret:
+            settings.set(PluginSettings.CLIENT_SECRET, clientSecret)
+        if publicUrl is not None:
+            settings.set(PluginSettings.PUBLIC_URL, publicUrl)
+        if internalUrl is not None:
+            settings.set(PluginSettings.INTERNAL_URL, internalUrl)
+        if scopes is not None:
+            settings.set(PluginSettings.SCOPES, scopes)
+        if buttonLabel is not None:
+            settings.set(PluginSettings.BUTTON_LABEL, buttonLabel)
+        if autoCreateUsers is not None:
+            settings.set(PluginSettings.AUTO_CREATE_USERS, autoCreateUsers)
+        if ignoreRegistrationPolicy is not None:
+            settings.set(PluginSettings.IGNORE_REGISTRATION_POLICY,
+                         ignoreRegistrationPolicy)
+        if adminClaim is not None:
+            settings.set(PluginSettings.ADMIN_CLAIM, adminClaim)
+        if adminClaimValue is not None:
+            settings.set(PluginSettings.ADMIN_CLAIM_VALUE, adminClaimValue)
         return self.getConfiguration()
-    
-    @access.public
+
+    @access.admin
     @autoDescribeRoute(
-        Description('Get the Keycloak login URL.')
-        .param('redirect', 'Where to redirect after login', dataType='string')
+        Description('Test connectivity to the OIDC provider (discovery + JWKS).')
+        .notes('Probes the URLs supplied (or the saved settings when omitted) '
+               'without persisting them, so an admin can verify before saving.')
+        .param('publicUrl', 'Provider URL to test; defaults to the saved value.',
+               required=False)
+        .param('internalUrl', 'Internal provider URL to test; defaults to the '
+               'saved value.', required=False)
     )
-    def getLoginUrl(self, redirect):
-        """Get the Keycloak authorization URL."""
+    def testConfiguration(self, publicUrl, internalUrl):
+        settings = Setting()
+        if publicUrl is None:
+            publicUrl = settings.get(PluginSettings.PUBLIC_URL)
+        if internalUrl is None:
+            internalUrl = settings.get(PluginSettings.INTERNAL_URL)
         try:
-            if not Setting().get(PluginSettings.ENABLE):
-                raise RestException('OIDC is not enabled', code=403)
-            
-            if not Setting().get(PluginSettings.CLIENT_ID):
-                raise RestException('OIDC client ID is not configured', code=500)
-            
-            state = self._createStateToken(redirect)
-            redirectUri = '/'.join((getApiUrl(), 'oidc', 'callback'))
-            
-            provider = KeycloakProvider()
-            authUrl = provider.getAuthorizationUrl(state, redirectUri)
-            
-            return {'url': authUrl}
-        except RestException:
-            raise
-        except Exception as e:
-            raise RestException(f'Failed to get authorization URL: {str(e)}', code=502)
-    
-    
+            result = probeProvider(publicUrl, internalUrl)
+        except RestException as e:
+            return {'ok': False, 'message': str(e)}
+        result['ok'] = True
+        return result
+
     @access.public
     @autoDescribeRoute(
-        Description('OIDC callback endpoint.')
-        .param('state', 'State token from authorization request', paramType='query')
-        .param('code', 'Authorization code from Keycloak', paramType='query')
-        .param('error', 'Error from Keycloak', paramType='query', required=False)
+        Description('Begin the OIDC login flow; returns the authorization URL.')
+        .param('redirect', 'Same-origin path to return to after login.')
     )
-    def callback(self, state, code, error=None):
-        """Handle OIDC callback from Keycloak."""
-        
+    def login(self, redirect):
+        if not Setting().get(PluginSettings.ENABLED):
+            raise RestException('OIDC login is not enabled.', code=403)
+
+        redirect = _safeRedirect(redirect)
+        client = OidcClient()
+
+        verifier, challenge = generate_pkce_pair()
+        nonce = generate_nonce()
+
+        # Stash the PKCE verifier, nonce, and redirect server-side, keyed by a
+        # short-lived token whose id is the opaque `state`. None of these leak
+        # into the URL the way the redirect alone would.
+        csrf = Token().createToken(days=0.25)
+        csrf['oidc'] = {'codeVerifier': verifier, 'nonce': nonce, 'redirect': redirect}
+        Token().save(csrf)
+
+        url = client.authorizationUrl(
+            state=str(csrf['_id']), nonce=nonce, codeChallenge=challenge,
+            redirectUri=self._redirectUri())
+        return {'url': url}
+
+    @access.public
+    @autoDescribeRoute(
+        Description('OIDC redirect callback.')
+        .param('state', 'Opaque state token.', required=False)
+        .param('code', 'Authorization code.', required=False)
+        .param('error', 'Error returned by the provider.', required=False),
+        hide=True
+    )
+    def callback(self, state, code, error):
         if error:
-            raise RestException(f'OIDC error: {error}', code=400)
-        
-        if not state or not code:
-            raise RestException('Missing state or code parameter', code=400)
-        
-        try:
-            redirect = self._validateStateToken(state)
-        except RestException as e:
-            raise e
-        
-        try:
-            provider = KeycloakProvider()
-            redirectUri = '/'.join((getApiUrl(), 'oidc', 'callback'))
-            
-            # Exchange code for tokens
-            tokenResp = provider.getToken(code, redirectUri)
-            if 'access_token' not in tokenResp:
-                raise RestException('No access token in token response', code=502)
-            accessToken = tokenResp['access_token']
-            
-            # Get user info
-            userInfo = provider.getUserInfo(accessToken)
-            
-            # Create or update Girder user
-            user = provider.createOrUpdateUser(userInfo)
-            
-            # Create authentication token
-            authToken = Token().createToken(user=user, days=365)
-            
-            # Redirect with token
-            redirect = urlunparse(urlparse(redirect)._replace(
-                query=urlencode({'girderToken': authToken['_id']})
-            ))
+            raise RestException("OIDC provider returned an error: '%s'." % error,
+                                code=502)
+        self.requireParams({'state': state, 'code': code})
 
-            raise cherrypy.HTTPRedirect(redirect)
-            
-        except cherrypy.HTTPRedirect:
-            raise
-        except RestException as e:
-            raise e
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            raise RestException(f'OIDC authentication failed: {str(e)}', code=502)
-    
-    @access.public
-    @autoDescribeRoute(
-        Description('Check if the current user is an OIDC user.')
-    )
-    def isOidcUser(self):
-        """Check if current user is authenticated via OIDC."""
-        try:
-            user = self.getCurrentUser()
-            if not user:
-                return {'isOidcUser': False}
-            
-            # Check if user has OIDC provider info
-            oidcArray = user.get('oidc', [])
-            isOidc = isinstance(oidcArray, list) and len(oidcArray) > 0 and any(
-                o.get('provider') == 'keycloak' for o in oidcArray
-            )
-            
-            return {'isOidcUser': isOidc}
-        except Exception as e:
-            raise RestException(f'Failed to check OIDC user status: {str(e)}', code=500)
-    
-    @access.public
-    @autoDescribeRoute(
-        Description('Exchange an OIDC access token for a Girder authentication token.')
-        .param('Authorization', 'Bearer token (OIDC access token from direct access grant flow)', 
-               paramType='header', required=True)
-    )
-    def exchangeToken(self):
-        """
-        Exchange an OIDC access token (from direct access grant flow) for a Girder token.
-        
-        This endpoint allows clients to authenticate using OIDC direct access grant flow:
-        1. Client authenticates with Keycloak using username/password
-        2. Client receives OIDC access_token
-        3. Client sends access_token via Authorization header
-        4. Endpoint returns Girder authentication token
-        
-        Usage (with curl):
-            # 1. Get OIDC token from Keycloak
-            OIDC_TOKEN=$(curl -X POST https://keycloak/token \
-              -d grant_type=password \
-              -d client_id=girder \
-              -d client_secret=secret \
-              -d username=user \
-              -d password=pass | jq -r .access_token)
-            
-            # 2. Exchange for Girder token
-            curl -X GET https://girder/api/v1/oidc/token \
-              -H "Authorization: Bearer $OIDC_TOKEN"
-        """
-        # Get token from Authorization header
-        authHeader = cherrypy.request.headers.get('Authorization', '')
-        if not authHeader.startswith('Bearer '):
-            raise RestException('Missing or invalid Authorization header. Use: Authorization: Bearer <token>', code=400)
-        
-        access_token = authHeader[7:]  # Remove 'Bearer ' prefix
-        
-        if not Setting().get(PluginSettings.ENABLE):
-            raise RestException('OIDC is not enabled', code=403)
-        
-        try:
-            provider = KeycloakProvider()
-            
-            # Validate token and get user info
-            userInfo = provider.getUserInfo(access_token)
-            
-            # Create or update Girder user
-            user = provider.createOrUpdateUser(userInfo)
-            
-            # Create authentication token
-            authToken = Token().createToken(user=user, days=365)
-            
-            return {
-                'authToken': authToken['_id'],
-                'userId': user['_id'],
-                'login': user['login'],
-                'email': user['email']
-            }
-            
-        except RestException:
-            raise
-        except Exception as e:
-            raise RestException(f'Token exchange failed: {str(e)}', code=502)
+        token = Token().load(state, objectId=False, level=AccessType.READ)
+        if token is None or 'oidc' not in token:
+            raise RestException('Invalid OIDC state token.', code=403)
+        Token().remove(token)
+        if token['expires'] < datetime.datetime.now(datetime.timezone.utc):
+            raise RestException('Expired OIDC state token.', code=403)
 
+        oidcData = token['oidc']
+        redirect = _safeRedirect(oidcData.get('redirect'))
+
+        client = OidcClient()
+        tokenResp = client.exchangeCode(
+            code, oidcData['codeVerifier'], self._redirectUri())
+        idToken = tokenResp.get('id_token')
+        if not idToken:
+            raise RestException('OIDC token response had no id_token.', code=502)
+
+        claims = client.validateIdToken(idToken, oidcData['nonce'])
+        email = claims.get('email')
+        if not email:
+            raise RestException('OIDC ID token did not include an email claim.',
+                                code=502)
+
+        settings = Setting()
+        isAdmin = claimGrantsAdmin(
+            claims, settings.get(PluginSettings.ADMIN_CLAIM),
+            settings.get(PluginSettings.ADMIN_CLAIM_VALUE))
+
+        user = createOrReuseUser(
+            oidcId=claims['sub'], email=email,
+            firstName=claims.get('given_name', ''),
+            lastName=claims.get('family_name', ''),
+            userName=claims.get('preferred_username'),
+            fullName=claims.get('name'), admin=isAdmin)
+        User().verifyLogin(user)
+
+        girderToken = Token().createToken(user)
+        self.sendAuthTokenCookie(token=girderToken)
+
+        parsed = urlparse(redirect)
+        query = parse_qs(parsed.query)
+        query['girderToken'] = str(girderToken['_id'])
+        updated = urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path, parsed.params,
+            urlencode(query, doseq=True), parsed.fragment))
+        raise cherrypy.HTTPRedirect(updated)

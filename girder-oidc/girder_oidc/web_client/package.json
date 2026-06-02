@@ -1,24 +1,33 @@
 {
-  "name": "@girder/oidc",
+  "name": "@girder/girder-plugin-oidc",
   "version": "0.0.0",
-  "description": "Girder plugin for OIDC/Keycloak authentication",
-  "homepage": "https://github.com/girder/girder-oidc",
-  "bugs": {
-    "url": "https://github.com/girder/girder-oidc/issues"
-  },
+  "description": "Authenticate Girder users through an OpenID Connect provider.",
   "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/girder/girder-oidc.git"
+  "type": "module",
+  "files": [
+    "dist",
+    "package.json"
+  ],
+  "main": "./dist/girder-plugin-oidc.umd.cjs",
+  "module": "./dist/girder-plugin-oidc.js",
+  "exports": {
+    ".": {
+      "import": "./dist/girder-plugin-oidc.js",
+      "require": "./dist/girder-plugin-oidc.umd.cjs"
+    },
+    "./style.css": "./dist/style.css",
+    "./package.json": "./package.json"
   },
-  "peerDependencies": {
-    "@girder/core": "*"
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
   },
-  "girderPlugin": {
-    "name": "oidc",
-    "main": "./main.js"
+  "dependencies": {
+    "@girder/core": "file:/girder/girder/web"
   },
   "devDependencies": {
-    "stylus": "^0.59.0"
+    "pug": "^3.0.2",
+    "stylus": "^0.64.0",
+    "vite": "^8.0.0"
   }
 }

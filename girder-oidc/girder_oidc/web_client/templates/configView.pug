@@ -1,86 +1,60 @@
 .g-config-breadcrumb-container
 
-.g-oidc-config-container
-  .panel.panel-default
-    .panel-heading
-      h4 OIDC/Keycloak Configuration
-    
-    .panel-body
-      .alert.g-oidc-save-message.hidden
-      
-      form.form-horizontal(role="form")
-        .form-group
-          label.col-sm-3.control-label Keycloak URL (Internal)
-          .col-sm-6
-            input.form-control(type="text", name="keycloakUrl", value=keycloakUrl)
-            small.form-text.text-muted
-              | Internal URL for server-to-server communication (e.g., https://keycloak:8443 in Docker)
-        
-        .form-group
-          label.col-sm-3.control-label Keycloak Public URL
-          .col-sm-6
-            input.form-control(type="text", name="keycloakPublicUrl", value=keycloakPublicUrl)
-            small.form-text.text-muted
-              | Public URL for browser redirects (e.g., https://localhost:8443 or https://keycloak.example.com)
-        
-        .form-group
-          label.col-sm-3.control-label Keycloak Realm
-          .col-sm-6
-            input.form-control(type="text", name="keycloakRealm", value=keycloakRealm)
-            small.form-text.text-muted
-              | Keycloak realm name
-        
-        .form-group
-          label.col-sm-3.control-label Client ID
-          .col-sm-6
-            input.form-control(type="text", name="clientId", value=clientId)
-            small.form-text.text-muted
-              | OIDC client ID from Keycloak
-        
-        .form-group
-          label.col-sm-3.control-label Client Secret
-          .col-sm-6
-            input.form-control(type="password", name="clientSecret")
-            small.form-text.text-muted
-              | OIDC client secret from Keycloak (not displayed)
-        
-        .form-group
-          .col-sm-offset-3.col-sm-9
-            label
-              input(type="checkbox", name="enable", checked=enable)
-              | Enable OIDC Authentication
-        
-        .form-group
-          .col-sm-offset-3.col-sm-9
-            label
-              input(type="checkbox", name="autoCreateUsers", checked=autoCreateUsers)
-              | Automatically Create Users
-            small.form-text.text-muted
-              | Create Girder users automatically from OIDC login
-        
-        .form-group
-          .col-sm-offset-3.col-sm-9
-            label
-              input(type="checkbox", name="allowRegistration", checked=allowRegistration)
-              | Allow Registration from OIDC
-            small.form-text.text-muted
-              | Allow OIDC users to register new accounts
-        
-        .form-group
-          .col-sm-offset-3.col-sm-9
-            label
-              input(type="checkbox", name="ignoreRegistrationPolicy", checked=ignoreRegistrationPolicy)
-              | Ignore Closed Registration Policy
-            small.form-text.text-muted
-              | Allow OIDC users to create accounts even when registration is closed
-        
-        .form-group
-          .col-sm-offset-3.col-sm-6
-            button.btn.btn-primary.g-oidc-save-config(type="button")
-              i.icon-save
-              | Save Configuration
-            button.btn.btn-default.g-oidc-test-connection(type="button", style="margin-left: 10px;")
-              i.icon-link
-              | Test Connection
-        
-        .alert.g-oidc-test-message.hidden(style="margin-top: 10px;")
+form.g-oidc-config-form(role="form")
+  .form-group
+    .checkbox
+      label
+        input.g-oidc-enabled(type="checkbox", checked=config.enabled)
+        |  Enable OIDC login
+  .form-group
+    label.control-label(for="g-oidc-client-id") Client ID
+    input#g-oidc-client-id.input-sm.form-control(type="text", value=config.clientId)
+  .form-group
+    label.control-label(for="g-oidc-client-secret") Client secret
+    input#g-oidc-client-secret.input-sm.form-control(type="password", autocomplete="new-password",
+        placeholder=config.clientSecretSet ? "(unchanged — leave blank to keep)" : "")
+  .form-group
+    label.control-label(for="g-oidc-public-url") Provider URL (issuer, browser-facing)
+    input#g-oidc-public-url.input-sm.form-control(type="text", value=config.publicUrl,
+        placeholder="https://idp.example.com/realms/myrealm")
+  .form-group
+    label.control-label(for="g-oidc-internal-url") Internal provider URL (optional)
+    input#g-oidc-internal-url.input-sm.form-control(type="text", value=config.internalUrl,
+        placeholder="Server-to-server URL; leave blank if same as above")
+  .form-group
+    label.control-label(for="g-oidc-scopes") Scopes
+    input#g-oidc-scopes.input-sm.form-control(type="text", value=config.scopes,
+        placeholder="openid profile email")
+  .form-group
+    label.control-label(for="g-oidc-button-label") Login button label
+    input#g-oidc-button-label.input-sm.form-control(type="text", value=config.buttonLabel)
+  .form-group
+    .checkbox
+      label
+        input.g-oidc-auto-create(type="checkbox", checked=config.autoCreateUsers)
+        |  Automatically create Girder accounts for new identities
+  .form-group
+    .checkbox
+      label
+        input.g-oidc-ignore-registration(type="checkbox", checked=config.ignoreRegistrationPolicy)
+        |  Ignore closed registration policy
+  .form-group
+    label.control-label(for="g-oidc-admin-claim") Admin claim (optional)
+    input#g-oidc-admin-claim.input-sm.form-control(type="text", value=config.adminClaim,
+        placeholder="e.g. groups, roles, or is_admin")
+    p.g-oidc-field-help ID-token claim that grants site-admin. On each login the admin flag is synced to match this claim (granted or revoked). Leave blank to disable.
+  .form-group
+    label.control-label(for="g-oidc-admin-claim-value") Admin claim value (optional)
+    input#g-oidc-admin-claim-value.input-sm.form-control(type="text", value=config.adminClaimValue,
+        placeholder="Required value, e.g. girder-admins")
+    p.g-oidc-field-help For a list claim (groups/roles) this is the required member; for a scalar, the required value. Leave blank to match any truthy value (e.g. a boolean claim).
+  .g-oidc-redirect-uri-container
+    b Redirect URI to register with your provider:
+    span.g-oidc-redirect-uri= redirectUri
+  p.g-validation-failed-message#g-oidc-error-message
+  .g-oidc-actions
+    input.btn.btn-sm.btn-primary.g-oidc-save(type="submit", value="Save")
+    button.btn.btn-sm.btn-default.g-oidc-test(type="button")
+      i.icon-link-ext
+      |  Test connection
+  .g-oidc-test-result#g-oidc-test-result

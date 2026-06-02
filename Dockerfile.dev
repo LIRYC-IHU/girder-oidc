@@ -1,0 +1,15 @@
+FROM girder/girder:v5.0.9-py3
+
+# Authlib backs the OIDC discovery / JWKS / ID-token validation in the plugin.
+# pytest + pytest-girder run the plugin test suite inside the container; they are
+# version-matched to this image's girder (both 5.x).
+RUN pip install authlib pytest pytest-girder
+
+# Install the OIDC plugin editable. docker-compose.dev.yml bind-mounts the source
+# over /plugins/girder-oidc, so live Python edits are picked up on girder restart.
+# The web client is NOT built here: the `web` service runs `vite build --watch`
+# and writes girder_oidc/web_client/dist, which girder serves live from disk.
+COPY girder-oidc /plugins/girder-oidc
+RUN pip install -e /plugins/girder-oidc
+
+EXPOSE 8080

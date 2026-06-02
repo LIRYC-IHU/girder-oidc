@@ -1,0 +1,117 @@
+name: girder-oidc-dev
+
+# Self-contained development stack for the girder-oidc plugin (Girder 5):
+#   - girder : http://localhost:8080  (plugin editable-installed, dist served live)
+#   - dex    : http://localhost:5556/dex  (lightweight OIDC provider)
+#   - web    : vite build --watch, rebuilds girder_oidc/web_client/dist on edits
+#   - mongo  : internal only
+#
+# Dex is reached at two URLs:
+#   - http://dex:5556/dex       from the girder container (server-to-server)
+#   - http://localhost:5556/dex from the host browser (auth redirect) == issuer
+# The plugin rewrites public -> internal URLs for its own server-side calls.
+
+services:
+  girder:
+    image: girder-oidc-dev:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: girder-oidc-dev-girder
+    platform: linux/amd64
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mongo
+      - dex
+      - web
+    volumes:
+      - ./girder-oidc:/plugins/girder-oidc
+      # Mask the web client's node_modules: only the `web` (vite) container needs
+      # it, and uvicorn's dev autoreloader (girder serve, development mode) walks
+      # the whole plugin tree and dies on rolldown's dangling platform-binary
+      # symlinks. An anonymous volume hides node_modules from this container.
+      - /plugins/girder-oidc/girder_oidc/web_client/node_modules
+      - girder-assetstore:/var/girder/assetstore
+    environment:
+      OIDC_INTERNAL_URL: http://dex:5556/dex
+      OIDC_PUBLIC_URL: http://localhost:5556/dex
+      # Matches dex/config.yaml staticClients[0]. Pre-fills the admin config form;
+      # an admin must still toggle "enabled" on in Admin > Plugins > OIDC Login.
+      OIDC_CLIENT_ID: girder
+      OIDC_CLIENT_SECRET: girder-dev-secret
+    # Wait for the web client to be built before loading the plugin: girder reads
+    # the dist files at plugin-load time to compute cache-bust hashes.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "Waiting for web client build (girder_oidc/web_client/dist)..."
+        until [ -f /plugins/girder-oidc/girder_oidc/web_client/dist/girder-plugin-oidc.umd.cjs ]; do
+          sleep 1
+        done
+        echo "Web client ready; starting Girder."
+        exec girder serve -d mongodb://mongo:27017/girder -H 0.0.0.0
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+
+  web:
+    image: girder-oidc-dev:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: girder-oidc-dev-web
+    platform: linux/amd64
+    working_dir: /plugins/girder-oidc/girder_oidc/web_client
+    volumes:
+      - ./girder-oidc:/plugins/girder-oidc
+    # Install deps (@girder/core resolves to the girder source baked into the
+    # image at /girder/girder/web) then rebuild dist on every source change.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        npm install
+        exec npm run dev
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:5.0
+    container_name: girder-oidc-dev-mongo
+    platform: linux/amd64
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: girder
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    container_name: girder-oidc-dev-dex
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./dex/config.yaml:/etc/dex/config.yaml:ro
+
+  # One-off test runner: `make test`
+  # (docker compose -f docker-compose.dev.yml run --rm test). Not started by `up`.
+  test:
+    image: girder-oidc-dev:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    platform: linux/amd64
+    profiles:
+      - test
+    depends_on:
+      - mongo
+    volumes:
+      - ./girder-oidc:/plugins/girder-oidc
+    working_dir: /plugins/girder-oidc
+    entrypoint: ["pytest"]
+    command: ["-v", "plugin_tests", "--mongo-uri", "mongodb://mongo:27017"]
+
+volumes:
+  girder-assetstore:
+  mongo-data:

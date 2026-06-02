@@ -1,134 +1,75 @@
-# Girder OIDC - Development Deployment
+# Girder OIDC
 
-A complete Girder deployment with OIDC/Keycloak authentication, using Docker Compose with TLS support for secure local development.
+A Girder 5 plugin that lets users authenticate through any OpenID Connect
+provider (Keycloak, Dex, Auth0, Google, ...). Login uses the browser
+authorization-code flow with PKCE and nonce, and ID tokens are fully validated
+(signature, issuer, audience, expiry, nonce). This repo also ships a
+self-contained development stack for building and debugging the plugin locally.
 
-## Services
+## Development environment
 
-The `docker-compose.yml` orchestrates three services:
+The dev stack (`docker-compose.dev.yml`) runs over plain HTTP — no TLS, no
+certificates — and uses [Dex](https://dexidp.io/) as a lightweight OIDC provider:
 
-| Service | Container | Port | Purpose |
-|---------|-----------|------|---------|
-| **Girder** | girder-kitware | 8080 | Main application server |
-| **Keycloak** | girder-keycloak | 8443 | OIDC identity provider |
-| **MongoDB** | girder-mongo | 27017 | Data persistence |
+| Service | URL | Notes |
+|---------|-----|-------|
+| **Girder** | http://localhost:8080 | Plugin bind-mounted, editable install |
+| **Dex** | http://localhost:5556/dex | OIDC provider; static test user |
+| **web** | — | Vite `build --watch` of the web client |
+| **MongoDB** | internal only | Data persistence |
 
-## TLS Certificate Setup
+Dex is reached at **two** URLs: `http://dex:5556/dex` from inside the Girder
+container (server-to-server) and `http://localhost:5556/dex` from the host
+browser (this is also the token `issuer`). The plugin rewrites the public origin
+to the internal one for its own server-side calls (discovery, token, JWKS).
 
-The deployment uses HTTPS with TLS certificates for secure communication between services. Certificates must be generated before starting the Docker stack.
-
-### Generate Self-Signed Certificates (Development)
-
-Using **mkcert** (recommended for development):
-
-```bash
-# Install mkcert (macOS)
-brew install mkcert
-
-# Create a local CA and trust it
-mkcert -install
-
-# Generate certificates for localhost
-mkcert -cert-file cert.pem -key-file key.pem localhost "*.localhost" 127.0.0.1 ::1
-
-# Create directory and set environment variable
-mkdir -p ~/certs
-mv cert.pem key.pem rootCA.pem ~/certs/
-export TLS_CERT=~/certs
-```
-
-### Alternative: Using OpenSSL
+### Quick start
 
 ```bash
-# Generate self-signed certificate (90 days)
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 90 -nodes \
-  -subj "/C=US/ST=State/L=City/O=Org/CN=localhost"
-
-# Create directory and set environment variable
-mkdir -p ~/certs
-mv cert.pem key.pem ~/certs/
-export TLS_CERT=~/certs
-
-# Extract root CA (for client verification)
-cp cert.pem ~/certs/rootCA.pem
+make up            # build the shared image, start girder + dex + web + mongo
+make logs          # tail all logs (or: make logs-girder / logs-dex / logs-web)
 ```
 
-## Deployment
+Then:
 
-### 1. Set Environment Variable
+1. **Create the Girder admin account** at http://localhost:8080 (first visit
+   becomes the admin).
+2. **Enable OIDC** in the Girder Admin Panel → Plugins → "OIDC Login". The client
+   ID/secret and provider URLs are pre-filled from the compose environment
+   (`OIDC_CLIENT_ID=girder`, `OIDC_CLIENT_SECRET=girder-dev-secret`,
+   public `http://localhost:5556/dex`, internal `http://dex:5556/dex`), so you
+   only need to tick **Enable** and save.
+3. **Log in with OIDC** using the pre-provisioned Dex test user:
+   - Email: `testuser@example.com`
+   - Password: `testpass123`
 
-```bash
-export TLS_CERT=~/certs  # or wherever you stored certificates
-```
+The OAuth client and test user are defined in `dex/config.yaml`.
 
-### 2. Start Services
+> The base image `girder/girder:v5.0.9-py3` is published for `linux/amd64` only.
+> On Apple Silicon `docker compose build` mis-resolves its single-arch manifest,
+> so `make` builds the shared image with `docker build --platform linux/amd64`
+> and the compose services reference it by name.
 
-```bash
-docker compose up -d
-```
+### Dev loop
 
-### 3. Monitor Startup
+| Command | What it does |
+|---------|--------------|
+| `make up` | Build + start the stack |
+| `make down` | Stop the stack (keeps volumes) |
+| `make logs` / `make logs-girder` / `make logs-dex` / `make logs-web` | Tail logs |
+| `make shell` | Shell into the Girder container |
+| `make test` | Run the plugin test suite (pytest-girder) in a container |
+| `make clean` | Stop the stack **and delete volumes** (wipes data) |
 
-```bash
-docker compose logs -f
-```
+The web client is rebuilt automatically: the `web` service runs Vite in
+`build --watch` mode, so editing anything under `web_client/` regenerates
+`web_client/dist/` — just refresh the browser. Python edits under
+`girder-oidc/girder_oidc/` are picked up by Girder's dev autoreloader (or
+`docker compose -f docker-compose.dev.yml restart girder`); the package is
+installed editable.
 
-Expected output:
-- Girder: "Bus STARTED"
-- MongoDB: "Waiting for connections"
-- Keycloak: "Listening on" message
+To change the OIDC fixtures (client, test user), edit `dex/config.yaml` then
+`docker compose -f docker-compose.dev.yml restart dex`.
 
-### 4. Create the keycloak realms & client
-```bash
-setup_keycloak.sh
-```
-
-### 5. Access Services
-
-| Service | URL | Credentials |
-|---------|-----|-------------|
-| **Girder** | http://localhost:8080 | Create on first visit |
-| **Keycloak Admin** | https://localhost:8443/admin | admin / admin |
-
-## Configuration
-
-After services are running:
-
-1. **Create Girder admin account** at http://localhost:8080
-2. **Configure OIDC in Girder Admin Panel**:
-   - Keycloak URL: `https://keycloak:8443`
-   - Realm: `girder`
-   - Client ID: `girder`
-   - Client Secret: (from Keycloak - you can access it from the Keycloak admin page)
-3. **Test OIDC login** via the Keycloak button on login page
-
-## Stopping Services
-
-```bash
-# Stop containers (keep volumes)
-docker compose down
-
-# Stop and remove all data
-docker compose down -v
-```
-
-## Troubleshooting
-
-**Certificates not found:**
-```bash
-# Verify TLS_CERT is set
-echo $TLS_CERT
-
-# Verify files exist
-ls -la $TLS_CERT/{cert.pem,key.pem,rootCA.pem}
-```
-
-**Keycloak HTTPS errors:**
-- Ensure `KC_HTTPS_CERTIFICATE_FILE` and `KC_HTTPS_CERTIFICATE_KEY_FILE` paths match mounted volumes
-- Check certificate validity: `openssl x509 -in cert.pem -text -noout`
-
-**Browser SSL warnings (self-signed certs):**
-- Expected for development; browser allows proceeding after warning
-- For smooth experience, import `rootCA.pem` into system keychain (macOS: `Keychain Access → Certificate Assistant → Import`)
-
-# Funding
+## Funding
 This project was financed by the french Agence Nationale de la Recherche (ANR) - ANR-23-RHUS-0015
