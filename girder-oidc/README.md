@@ -49,6 +49,10 @@ In the Girder admin panel, go to **OIDC/Keycloak Configuration** and set:
 pytest plugin_tests/
 ```
 
+## Issues
+When using Girder behind a reverse proxy, the https scheme is not returned by the "getApiUrl" function using default settings. For the redirect address to be valid, you need to manually set the base address of the server (with https) in the admin -> advanced settings panel.
+
+
 ## License
 
 Apache 2.0

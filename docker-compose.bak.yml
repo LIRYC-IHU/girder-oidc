@@ -1,13 +1,15 @@
 services:
   girder:
-    image: girder/girder:3-latest-py3
+    build: .
+    container_name: girder-kitware
     ports:
       - "8080:8080"
     depends_on:
       - mongo
+      - keycloak
     volumes:
       # Plugins montés en éditables (source de vérité = ton repo local)
-      # - ./girder-oidc:/plugins/girder-oidc
+      - ./girder-oidc:/plugins/girder-oidc
       - ./girder-multi-part-zip:/plugins/girder-multi-part-zip
       # Logs et assetstore inchangés
       - ./logs:/root/.girder/logs
@@ -15,7 +17,6 @@ services:
       - $TLS_CERT/rootCA.pem:/etc/ssl/certs/mkcert-ca.pem:ro
     networks:
       - girder-network
-      - redcap-network
     restart: unless-stopped
     stdin_open: true
     tty: true
@@ -37,9 +38,33 @@ services:
       - girder-network
     restart: unless-stopped
 
+  keycloak:
+    image: keycloak/keycloak:latest
+    container_name: girder-keycloak
+    ports:
+      - "8443:8443"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/cert.pem
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/key.pem
+      KC_HOSTNAME: https://localhost:8443
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_PROXY: edge
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+      - $TLS_CERT/cert.pem:/opt/keycloak/conf/cert.pem:ro
+      - $TLS_CERT/key.pem:/opt/keycloak/conf/key.pem:ro
+    networks:
+      - girder-network
+    restart: unless-stopped
+    command:
+      - start-dev
+
 volumes:
   girder-assetstore:
   mongo-data:
+  keycloak-data:
 
 networks:
   girder-network:
