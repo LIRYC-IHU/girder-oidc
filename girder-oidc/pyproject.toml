@@ -1,13 +1,10 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools_scm]
-fallback_version = "0.0.0"
 
 [project]
 name = "girder-oidc"
-dynamic = ["version"]
+version = "0.2.0"
 description = "Authenticate Girder users through an OpenID Connect provider."
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -32,4 +29,13 @@ dependencies = [
 oidc = "girder_oidc:OidcPlugin"
 
 [project.urls]
-Homepage = "https://github.com/girder/girder-oidc"
+Homepage = "https://github.com/LIRYC-IHU/girder-oidc"
+
+[tool.setuptools.packages.find]
+exclude = ["plugin_tests*"]
+
+[tool.setuptools.package-data]
+girder_oidc = [
+    "web_client/dist/girder-plugin-oidc.umd.cjs",
+    "web_client/dist/style.css",
+]
