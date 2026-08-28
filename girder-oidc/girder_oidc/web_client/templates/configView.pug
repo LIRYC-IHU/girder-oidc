@@ -39,6 +39,12 @@ form.g-oidc-config-form(role="form")
         input.g-oidc-ignore-registration(type="checkbox", checked=config.ignoreRegistrationPolicy)
         |  Ignore closed registration policy
   .form-group
+    .checkbox
+      label
+        input.g-oidc-trust-unverified-email(type="checkbox", checked=config.trustUnverifiedEmail)
+        |  Trust the email claim even without <code>email_verified</code>
+    p.g-oidc-field-help Off by default. Girder matches and creates accounts by email address, so with this on anyone who can set an address at the provider can claim the matching Girder account. Only enable it for a provider that verifies every address it emits but omits the claim.
+  .form-group
     label.control-label(for="g-oidc-admin-claim") Admin claim (optional)
     input#g-oidc-admin-claim.input-sm.form-control(type="text", value=config.adminClaim,
         placeholder="e.g. groups, roles, or is_admin")

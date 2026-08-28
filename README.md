@@ -9,8 +9,14 @@ self-contained development stack for building and debugging the plugin locally.
 ## Features
 
 - **Authorization-code flow** with PKCE (S256) and a per-login nonce; ID tokens
-  are validated against the provider JWKS (signature, `iss`, `aud`, `exp`,
-  `nonce`) and same-origin redirects are enforced.
+  are validated against the provider JWKS (signature restricted to asymmetric
+  algorithms, `iss`, `aud`/`azp`, `sub`, `exp`, `nonce`) and same-origin
+  redirects are enforced.
+- **Login bound to the browser that started it**: the opaque `state` is paired
+  with an httponly cookie, so a login cannot be completed in a browser other
+  than the one that began it (login CSRF / session fixation).
+- **Session token never in a URL**: the callback hands the web client a
+  single-use, 60-second code, which the client redeems for the token.
 - **Automatic provisioning** of passwordless Girder accounts for new
   identities, with graceful fallbacks when the provider omits name claims
   (`given_name`/`family_name` → `name` → username → email local-part).
@@ -55,19 +61,75 @@ Open the Girder Admin Console → **Plugins** → **OIDC Login**. The settings a
 | **Login button label** | Text shown on the OIDC login button. |
 | **Automatically create Girder accounts** | Provision a new passwordless account the first time an identity logs in. |
 | **Ignore closed registration policy** | Allow OIDC account creation even when Girder registration is closed. |
+| **Trust the email claim without `email_verified`** | Off by default. See [Account linking](#account-linking-and-email_verified) — leaving this off is what stops an unverified address from claiming an account. |
 | **Admin claim** / **Admin claim value** | Map Girder site-admin from a token claim — see below. |
 
 The defaults for Client ID/secret and the provider URLs can be seeded from the
 environment (`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_PUBLIC_URL`,
 `OIDC_INTERNAL_URL`), which is what the dev stack uses.
 
+### Account linking and `email_verified`
+
+An identity is matched to a Girder account first by the provider's stable `sub`,
+and — the first time that identity is seen — by email address. That second step
+is only as trustworthy as the address, so the plugin acts on the email claim
+**only when the ID token asserts `email_verified`**. Without it, the login is
+refused rather than matched.
+
+This matters because a provider that lets a user choose their own address
+(self-service sign-up, a second connector, a writable LDAP `mail` attribute)
+would otherwise let anyone register `someone-else@your-lab.example` and take over
+the matching Girder account — including a site admin's. The same rule governs
+creating an account and updating a stored address.
+
+**Trust the email claim without `email_verified`** switches the check off. Only
+enable it for a provider that verifies every address it emits but omits the
+claim; a provider where users pick their own address must not have it enabled.
+
+#### Girder's own email verification
+
+The two checks do not stack: address verification belongs to the provider, so
+Girder's copy of it is bypassed for these accounts.
+
+- An OIDC-provisioned account is created with `emailVerified` already set, and
+  Girder's "please verify your address" email is **not** sent. Without this, an
+  instance with **Email verification** set to `required` would mail every SSO
+  user a confirmation link and then refuse their login until they clicked it —
+  for an address the provider had already verified.
+
+  Girder 5.0.14 added an `email.verification` event for exactly this opt-out,
+  but the plugin supports `girder>=5` and 5.0.9 (the version the project's own
+  images pin) has no hook at all. The plugin therefore wraps
+  `User._sendVerificationEmail`, which is the one interception point common to
+  both; the wrapper only stands down for the duration of the plugin's own
+  `createUser` call, on that thread. `test_user.py` pins this so an upstream
+  rename fails loudly instead of silently resuming the mails.
+- An unverified address is refused at login with a message explaining why. No
+  account is created and no mail is sent: mailing a confirmation link to an
+  address the provider would not vouch for is exactly the wrong move, since that
+  is the address an attacker would have supplied.
+- Local (non-OIDC) registrations are untouched and still receive Girder's
+  verification email as usual.
+
 ### Admin mapping from claims
 
 If **Admin claim** is set, the Girder site-admin flag is synchronised to that
 claim on every OIDC login (granted when it matches, **revoked** when it does
-not). This only ever affects OIDC-linked accounts — local accounts, including
-the bootstrap admin, are never touched. Leave **Admin claim** blank to disable
-the feature and manage admin status manually.
+not). Only accounts that go through an OIDC login are affected; purely local
+accounts are never touched.
+
+Two things to keep in mind:
+
+- The **last remaining site admin is never demoted**, even when the claim says
+  so. Otherwise a mis-set claim could leave the instance with no administrator
+  and no way back short of editing MongoDB. The refusal is logged.
+- Point **Admin claim** at something users cannot set themselves. A `groups` or
+  `roles` claim is only safe if group membership is administered centrally; on a
+  provider where users create their own groups, this is a self-service route to
+  Girder site-admin.
+
+Leave **Admin claim** blank to disable the feature and manage admin status
+manually.
 
 Matching depends on the shape of the claim and the optional **Admin claim
 value**:
@@ -85,6 +147,27 @@ For OIDC-linked accounts the identity provider owns the profile, password, and
 two-factor settings. The plugin rejects edits to first/last name, email,
 password, and OTP at the REST layer (HTTP 403) for both the account owner and
 site admins, and hides the corresponding controls in the account page.
+
+Girder's "forgot my password" flow is blocked for these accounts too. That flow
+issues a full session token before any password is set, so leaving it open would
+be a way into an OIDC account that never passes through the provider — and so
+skips whatever MFA or conditional access the provider enforces.
+
+The lockdown applies only to OIDC-linked accounts: purely local users keep full
+self-service over their profile, password, and 2FA. That is worth stating
+explicitly because it is easy to break — Girder requires every handler bound to
+a `rest.*.before` event to declare an access level, and silently escalates the
+whole route to site-admin-only when one does not. The guards in
+`account_guard.py` are decorated for that reason, and `plugin_tests/
+test_account_guard.py` pins the behaviour with a non-admin user.
+
+### Transport
+
+The browser-facing **Provider URL** must be `https` (plain `http` is accepted
+only for `localhost`, for the dev stack): it carries the authorization redirect
+and is the issuer the ID token is checked against. Endpoints advertised by the
+provider's discovery document are refused if they downgrade to plaintext, since
+the token request carries the client secret.
 
 ## Development environment
 

@@ -1,4 +1,5 @@
 import datetime
+import hmac
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import cherrypy
@@ -6,7 +7,6 @@ import cherrypy
 from girder.api import access
 from girder.api.describe import Description, autoDescribeRoute
 from girder.api.rest import Resource, getApiUrl
-from girder.constants import AccessType
 from girder.exceptions import RestException
 from girder.models.setting import Setting
 from girder.models.token import Token
@@ -14,7 +14,20 @@ from girder.models.user import User
 
 from .client import OidcClient, generate_nonce, generate_pkce_pair, probeProvider
 from .settings import PluginSettings
-from .user import claimGrantsAdmin, createOrReuseUser
+from .user import claimAssertsVerifiedEmail, claimGrantsAdmin, createOrReuseUser
+
+
+# Cookie that ties an in-flight login to the browser that started it.
+_STATE_COOKIE = 'girderOidcState'
+# The authorization round trip is interactive; ten minutes is generous and keeps
+# abandoned attempts from piling up in the token collection.
+_STATE_TTL_MINUTES = 10
+# The SPA redeems its handoff code as soon as the redirect lands.
+_HANDOFF_TTL_SECONDS = 60
+# Dedicated scopes so neither of these bookkeeping tokens can ever be mistaken
+# for a user-authentication token.
+_STATE_SCOPE = 'oidc.state'
+_HANDOFF_SCOPE = 'oidc.handoff'
 
 
 def _safeRedirect(redirect):
@@ -22,8 +35,10 @@ def _safeRedirect(redirect):
     if not redirect:
         return '/'
     parsed = urlparse(redirect)
+    # Backslashes are normalised to '/' by browsers, so "/\evil.com" reads as a
+    # protocol-relative URL to anything that resolves the path before the host.
     if parsed.scheme or parsed.netloc or not redirect.startswith('/') \
-            or redirect.startswith('//'):
+            or redirect.startswith('//') or '\\' in redirect:
         raise RestException(
             'Redirect must be a same-origin absolute path (e.g. "/").', code=400)
     return redirect
@@ -42,9 +57,34 @@ class Oidc(Resource):
         self.route('POST', ('configuration', 'test'), self.testConfiguration)
         self.route('GET', ('login',), self.login)
         self.route('GET', ('callback',), self.callback)
+        self.route('POST', ('exchange',), self.exchange)
 
     def _redirectUri(self):
         return '/'.join((getApiUrl(), 'oidc', 'callback'))
+
+    def _isHttps(self):
+        # CherryPy proxy tools rewrite request.base but not request.scheme when a
+        # reverse proxy sends X-Forwarded-Proto (same test girder core uses).
+        return (cherrypy.request.scheme == 'https'
+                or cherrypy.request.base.startswith('https'))
+
+    def _setStateCookie(self, value):
+        cookie = cherrypy.response.cookie
+        cookie[_STATE_COOKIE] = value
+        cookie[_STATE_COOKIE]['path'] = '/'
+        cookie[_STATE_COOKIE]['max-age'] = _STATE_TTL_MINUTES * 60
+        cookie[_STATE_COOKIE]['httponly'] = True
+        # Lax, not Strict: the provider returns the user with a top-level GET
+        # navigation, which Strict would strip -- breaking every login.
+        cookie[_STATE_COOKIE]['samesite'] = 'Lax'
+        if self._isHttps():
+            cookie[_STATE_COOKIE]['secure'] = True
+
+    def _clearStateCookie(self):
+        cookie = cherrypy.response.cookie
+        cookie[_STATE_COOKIE] = ''
+        cookie[_STATE_COOKIE]['path'] = '/'
+        cookie[_STATE_COOKIE]['expires'] = 0
 
     @access.public
     @autoDescribeRoute(
@@ -74,6 +114,8 @@ class Oidc(Resource):
             'autoCreateUsers': settings.get(PluginSettings.AUTO_CREATE_USERS),
             'ignoreRegistrationPolicy': settings.get(
                 PluginSettings.IGNORE_REGISTRATION_POLICY),
+            'trustUnverifiedEmail': settings.get(
+                PluginSettings.TRUST_UNVERIFIED_EMAIL),
             'adminClaim': settings.get(PluginSettings.ADMIN_CLAIM),
             'adminClaimValue': settings.get(PluginSettings.ADMIN_CLAIM_VALUE),
         }
@@ -95,6 +137,10 @@ class Oidc(Resource):
                dataType='boolean', required=False)
         .param('ignoreRegistrationPolicy', 'Allow creation even if registration '
                'policy is closed.', dataType='boolean', required=False)
+        .param('trustUnverifiedEmail', 'Act on the email claim even when the '
+               'provider does not assert email_verified. Only enable for a '
+               'provider that vouches for every address it emits.',
+               dataType='boolean', required=False)
         .param('adminClaim', 'ID-token claim that confers site-admin (blank to '
                'disable admin mapping).', required=False)
         .param('adminClaimValue', 'Required value of the admin claim (blank means '
@@ -102,7 +148,8 @@ class Oidc(Resource):
     )
     def setConfiguration(self, enabled, clientId, clientSecret, publicUrl,
                          internalUrl, scopes, buttonLabel, autoCreateUsers,
-                         ignoreRegistrationPolicy, adminClaim, adminClaimValue):
+                         ignoreRegistrationPolicy, trustUnverifiedEmail,
+                         adminClaim, adminClaimValue):
         settings = Setting()
         if enabled is not None:
             settings.set(PluginSettings.ENABLED, enabled)
@@ -124,6 +171,9 @@ class Oidc(Resource):
         if ignoreRegistrationPolicy is not None:
             settings.set(PluginSettings.IGNORE_REGISTRATION_POLICY,
                          ignoreRegistrationPolicy)
+        if trustUnverifiedEmail is not None:
+            settings.set(PluginSettings.TRUST_UNVERIFIED_EMAIL,
+                         trustUnverifiedEmail)
         if adminClaim is not None:
             settings.set(PluginSettings.ADMIN_CLAIM, adminClaim)
         if adminClaimValue is not None:
@@ -171,9 +221,23 @@ class Oidc(Resource):
         # Stash the PKCE verifier, nonce, and redirect server-side, keyed by a
         # short-lived token whose id is the opaque `state`. None of these leak
         # into the URL the way the redirect alone would.
-        csrf = Token().createToken(days=0.25)
-        csrf['oidc'] = {'codeVerifier': verifier, 'nonce': nonce, 'redirect': redirect}
+        #
+        # `browserSecret` is mirrored into an httponly cookie and re-checked at
+        # the callback. A valid state alone is not enough to complete a login:
+        # without this, an attacker could run the flow against their own account
+        # and then feed the resulting state+code to a victim, whose browser would
+        # silently end up signed in as the attacker.
+        browserSecret = generate_nonce()
+        csrf = Token().createToken(
+            days=_STATE_TTL_MINUTES / 1440, scope=_STATE_SCOPE)
+        csrf['oidc'] = {
+            'codeVerifier': verifier,
+            'nonce': nonce,
+            'redirect': redirect,
+            'browserSecret': browserSecret,
+        }
         Token().save(csrf)
+        self._setStateCookie(browserSecret)
 
         url = client.authorizationUrl(
             state=str(csrf['_id']), nonce=nonce, codeChallenge=challenge,
@@ -194,7 +258,10 @@ class Oidc(Resource):
                                 code=502)
         self.requireParams({'state': state, 'code': code})
 
-        token = Token().load(state, objectId=False, level=AccessType.READ)
+        # force=True, then require our own marker field: loading by ACL would
+        # answer 401 for a token that exists but isn't ours and 403 for one that
+        # doesn't exist, handing out a token-existence oracle for free.
+        token = Token().load(state, objectId=False, force=True)
         if token is None or 'oidc' not in token:
             raise RestException('Invalid OIDC state token.', code=403)
         Token().remove(token)
@@ -202,6 +269,21 @@ class Oidc(Resource):
             raise RestException('Expired OIDC state token.', code=403)
 
         oidcData = token['oidc']
+
+        # The state must have been minted for *this* browser (see `login`).
+        presented = cherrypy.request.cookie.get(_STATE_COOKIE)
+        self._clearStateCookie()
+        expected = oidcData.get('browserSecret') or ''
+        # Compare as bytes: compare_digest refuses non-ASCII str, and the cookie
+        # value is attacker-controlled, so a str comparison would turn a crafted
+        # cookie into a 500 instead of this 403.
+        if not expected or not hmac.compare_digest(
+                (presented.value if presented else '').encode('utf-8', 'ignore'),
+                expected.encode('utf-8')):
+            raise RestException(
+                'This login attempt did not start in this browser. Please try '
+                'signing in again.', code=403)
+
         redirect = _safeRedirect(oidcData.get('redirect'))
 
         client = OidcClient()
@@ -227,16 +309,44 @@ class Oidc(Resource):
             firstName=claims.get('given_name', ''),
             lastName=claims.get('family_name', ''),
             userName=claims.get('preferred_username'),
-            fullName=claims.get('name'), admin=isAdmin)
+            fullName=claims.get('name'), admin=isAdmin,
+            emailVerified=claimAssertsVerifiedEmail(claims))
         User().verifyLogin(user)
 
         girderToken = Token().createToken(user)
         self.sendAuthTokenCookie(token=girderToken)
 
+        # Hand the session token to the web client through a single-use code
+        # rather than putting the token itself in the URL, where it would outlive
+        # the request in browser history and in every access log between here and
+        # the user (the token cookie above is httponly, so the SPA still needs a
+        # copy of the value for its own API calls).
+        handoff = Token().createToken(
+            days=_HANDOFF_TTL_SECONDS / 86400, scope=_HANDOFF_SCOPE)
+        handoff['oidcHandoff'] = str(girderToken['_id'])
+        Token().save(handoff)
+
         parsed = urlparse(redirect)
         query = parse_qs(parsed.query)
-        query['girderToken'] = str(girderToken['_id'])
+        query['girderOidcCode'] = str(handoff['_id'])
         updated = urlunparse((
             parsed.scheme, parsed.netloc, parsed.path, parsed.params,
             urlencode(query, doseq=True), parsed.fragment))
         raise cherrypy.HTTPRedirect(updated)
+
+    @access.public
+    @autoDescribeRoute(
+        Description('Redeem a one-time OIDC handoff code for a session token.')
+        .notes('The code is issued by the login redirect, is valid for %d '
+               'seconds, and is consumed on first use.' % _HANDOFF_TTL_SECONDS)
+        .param('code', 'The handoff code from the login redirect.'),
+        hide=True
+    )
+    def exchange(self, code):
+        handoff = Token().load(code, objectId=False, force=True)
+        if handoff is None or 'oidcHandoff' not in handoff:
+            raise RestException('Invalid OIDC handoff code.', code=403)
+        Token().remove(handoff)
+        if handoff['expires'] < datetime.datetime.now(datetime.timezone.utc):
+            raise RestException('Expired OIDC handoff code.', code=403)
+        return {'token': handoff['oidcHandoff']}

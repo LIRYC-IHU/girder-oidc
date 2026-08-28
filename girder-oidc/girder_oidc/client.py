@@ -1,11 +1,12 @@
 import base64
 import hashlib
+import hmac
 import secrets
 import time
 from urllib.parse import urlencode, urlparse
 
 import requests
-from authlib.jose import jwt
+from authlib.jose import JsonWebToken
 from authlib.jose.errors import JoseError
 
 from girder.exceptions import RestException
@@ -15,6 +16,19 @@ from .settings import PluginSettings
 
 _DISCOVERY_TTL = 300  # seconds; cache OIDC discovery + JWKS this long
 _HTTP_TIMEOUT = 10
+
+# Asymmetric signature algorithms only. The provider signs with a key from its
+# JWKS and we only ever hold the public half, so an HMAC algorithm here would
+# invite the classic confusion attack (forge a token by HMAC-ing with the
+# provider's *public* key). Passing an explicit list also pins the behaviour
+# rather than inheriting whatever the installed authlib happens to allow.
+_ID_TOKEN_ALGORITHMS = [
+    'RS256', 'RS384', 'RS512',
+    'PS256', 'PS384', 'PS512',
+    'ES256', 'ES384', 'ES512',
+    'EdDSA',
+]
+_jwt = JsonWebToken(_ID_TOKEN_ALGORITHMS)
 
 
 def generate_pkce_pair():
@@ -30,16 +44,27 @@ def generate_nonce():
     return secrets.token_urlsafe(32)
 
 
+def _origin(url):
+    parsed = urlparse(url)
+    return f'{parsed.scheme}://{parsed.netloc}'
+
+
+def _requireHttpUrl(url, label):
+    """Reject anything that isn't an absolute http(s) URL before we hand it to
+    requests, so a setting can't aim server-side fetches at another scheme."""
+    parsed = urlparse(url or '')
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        raise RestException(f'{label} must be an absolute http(s) URL.', code=400)
+    return parsed
+
+
 def _rewriteOrigin(publicUrl, internalUrl, url):
     """Swap a public provider origin for its server-to-server equivalent."""
     if internalUrl == publicUrl or not url:
         return url
-    pub = urlparse(publicUrl)
-    intern = urlparse(internalUrl)
-    pubOrigin = f'{pub.scheme}://{pub.netloc}'
-    internOrigin = f'{intern.scheme}://{intern.netloc}'
+    pubOrigin = _origin(publicUrl)
     if url.startswith(pubOrigin):
-        return internOrigin + url[len(pubOrigin):]
+        return _origin(internalUrl) + url[len(pubOrigin):]
     return url
 
 
@@ -62,6 +87,8 @@ def probeProvider(publicUrl, internalUrl=None):
     internalUrl = (internalUrl or '').rstrip('/') or publicUrl
     if not publicUrl:
         raise RestException('OIDC provider URL is not configured.', code=400)
+    _requireHttpUrl(publicUrl, 'Provider URL')
+    _requireHttpUrl(internalUrl, 'Internal provider URL')
 
     discoveryUrl = _rewriteOrigin(
         publicUrl, internalUrl, f'{publicUrl}/.well-known/openid-configuration')
@@ -114,6 +141,29 @@ class OidcClient:
         """Rewrite a public provider URL to its server-to-server equivalent."""
         return _rewriteOrigin(self.publicUrl, self.internalUrl, url)
 
+    def _providerEndpoint(self, discovery, name):
+        """Resolve an endpoint advertised by the discovery document.
+
+        The document is only as trustworthy as the channel it arrived on, so
+        refuse a scheme downgrade: a provider we reach over https must not be
+        able to send us to a plaintext endpoint. That matters most for the token
+        endpoint, whose POST body carries the client secret.
+        """
+        url = discovery.get(name)
+        if not url:
+            raise RestException(
+                f'Discovery document is missing a "{name}".', code=502)
+        internal = self._toInternal(url)
+        parsed = urlparse(internal)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            raise RestException(
+                f'Provider advertised an unusable "{name}".', code=502)
+        if urlparse(self.internalUrl).scheme == 'https' and parsed.scheme != 'https':
+            raise RestException(
+                f'Provider advertised a plaintext "{name}"; refusing to use it.',
+                code=502)
+        return internal
+
     def _fetchJson(self, url, **kwargs):
         return _httpGetJson(url, **kwargs)
 
@@ -126,7 +176,7 @@ class OidcClient:
         discoveryUrl = self._toInternal(
             f'{self.publicUrl}/.well-known/openid-configuration')
         discovery = self._fetchJson(discoveryUrl)
-        jwks = self._fetchJson(self._toInternal(discovery['jwks_uri']))
+        jwks = self._fetchJson(self._providerEndpoint(discovery, 'jwks_uri'))
 
         self._cache[self.publicUrl] = (time.time() + _DISCOVERY_TTL, discovery, jwks)
         return discovery, jwks
@@ -152,18 +202,23 @@ class OidcClient:
 
     def exchangeCode(self, code, codeVerifier, redirectUri):
         """Exchange an authorization code for tokens (server-side, internal URL)."""
-        discovery = self.discovery
-        tokenUrl = self._toInternal(discovery['token_endpoint'])
+        tokenUrl = self._providerEndpoint(self.discovery, 'token_endpoint')
         data = {
             'grant_type': 'authorization_code',
             'code': code,
             'redirect_uri': redirectUri,
             'client_id': self.clientId,
-            'client_secret': self.clientSecret,
             'code_verifier': codeVerifier,
         }
+        # Omit rather than blank the secret: a public client authenticates with
+        # PKCE alone, and an empty client_secret makes some providers 400.
+        if self.clientSecret:
+            data['client_secret'] = self.clientSecret
         try:
-            resp = requests.post(tokenUrl, data=data, timeout=_HTTP_TIMEOUT)
+            # No redirect following: a 307/308 would replay this body, secret
+            # included, at whatever location the provider names.
+            resp = requests.post(tokenUrl, data=data, timeout=_HTTP_TIMEOUT,
+                                 allow_redirects=False)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
@@ -174,21 +229,39 @@ class OidcClient:
         Verify the ID token signature and claims, returning the claims dict.
 
         Validates the signature against the provider JWKS and checks ``iss``,
-        ``aud``, expiry, and the ``nonce`` bound to this login attempt.
+        ``aud``, ``sub``, expiry, and the ``nonce`` bound to this login attempt.
         """
         discovery, jwks = self._load()
         claimsOptions = {
             'iss': {'essential': True, 'value': discovery['issuer']},
             'aud': {'essential': True, 'value': self.clientId},
+            # `sub` is the identity we key Girder accounts on, so a token
+            # without one is unusable rather than merely incomplete.
+            'sub': {'essential': True},
             'exp': {'essential': True},
         }
         try:
-            claims = jwt.decode(idToken, jwks, claims_options=claimsOptions)
+            claims = _jwt.decode(idToken, jwks, claims_options=claimsOptions)
             claims.validate(leeway=30)
-        except JoseError as e:
+        except (JoseError, ValueError) as e:
             raise RestException(f'Invalid OIDC ID token: {e}', code=403)
 
-        if claims.get('nonce') != nonce:
+        # Bytes, not str: compare_digest rejects non-ASCII str, and the nonce in
+        # the token is provider-supplied, so a str comparison could raise here.
+        if not hmac.compare_digest(
+                str(claims.get('nonce') or '').encode('utf-8', 'ignore'),
+                str(nonce or '').encode('utf-8', 'ignore')):
             raise RestException('OIDC nonce mismatch.', code=403)
+
+        # authlib accepts an `aud` list that merely contains our client id. When
+        # a token has several audiences OIDC additionally requires `azp` to name
+        # the client it was issued for; without this check a token minted for a
+        # different client of the same provider would be accepted here.
+        aud = claims.get('aud')
+        if isinstance(aud, (list, tuple)) and len(aud) > 1 \
+                and claims.get('azp') != self.clientId:
+            raise RestException(
+                'OIDC ID token has multiple audiences and is not authorized '
+                'for this client.', code=403)
 
         return claims

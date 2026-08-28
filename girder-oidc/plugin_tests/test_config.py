@@ -40,6 +40,69 @@ def test_admin_claim_settings_round_trip(server, admin):
 
 
 @pytest.mark.plugin('oidc')
+def test_trust_unverified_email_defaults_off_and_round_trips(server, admin):
+    resp = server.request(path='/oidc/configuration', method='GET', user=admin)
+    assertStatusOk(resp)
+    assert resp.json['trustUnverifiedEmail'] is False
+
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'trustUnverifiedEmail': True})
+    assertStatusOk(resp)
+    assert resp.json['trustUnverifiedEmail'] is True
+
+
+@pytest.mark.plugin('oidc')
+def test_client_secret_is_never_returned(server, admin):
+    server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'clientSecret': 'super-secret'})
+    resp = server.request(path='/oidc/configuration', method='GET', user=admin)
+    assertStatusOk(resp)
+    assert resp.json['clientSecretSet'] is True
+    assert 'super-secret' not in str(resp.json)
+
+
+@pytest.mark.plugin('oidc')
+def test_plaintext_public_url_is_rejected(server, admin):
+    """The browser-facing URL is the issuer the ID token is checked against, so
+    it must not be reachable over plaintext outside localhost."""
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'publicUrl': 'http://idp.example.com'})
+    assertStatus(resp, 400)
+
+    # https is fine...
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'publicUrl': 'https://idp.example.com'})
+    assertStatusOk(resp)
+
+    # ...and so is plain http on localhost, for the dev stack.
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'publicUrl': 'http://localhost:5556/dex'})
+    assertStatusOk(resp)
+
+
+@pytest.mark.plugin('oidc')
+def test_non_http_provider_url_is_rejected(server, admin):
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'publicUrl': 'file:///etc/passwd'})
+    assertStatus(resp, 400)
+
+
+@pytest.mark.plugin('oidc')
+def test_public_config_leaks_nothing(server):
+    """`GET /oidc/config` is unauthenticated -- it must expose only what the
+    login button needs."""
+    resp = server.request(path='/oidc/config', method='GET')
+    assertStatusOk(resp)
+    assert set(resp.json) == {'enabled', 'buttonLabel'}
+
+
+@pytest.mark.plugin('oidc')
 def test_test_connection_ok(server, admin, monkeypatch):
     monkeypatch.setattr(
         oidc_rest, 'probeProvider',

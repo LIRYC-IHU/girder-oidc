@@ -21,7 +21,10 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "girder>=5",
-    "authlib",
+    # Pinned: ID-token validation relies on authlib rejecting `alg: none` and
+    # refusing to import an RSA JWK as an HMAC key. Both are properties of the
+    # 1.x `authlib.jose` API, which 2.0 replaces with joserfc.
+    "authlib>=1.3,<2",
     "requests",
 ]
 
