@@ -8,7 +8,31 @@ import './views/UserAccountView';
 // successful OIDC login. The code is a single-use, 60-second handle on the
 // session token -- never the token itself, which must not end up in browser
 // history or in the access logs of anything sitting in front of Girder.
-const oidcCode = new URLSearchParams(window.location.search).get('girderOidcCode');
+const params = new URLSearchParams(window.location.search);
+const oidcCode = params.get('girderOidcCode');
+
+// A `girderOidcError` query param means the login failed after the provider
+// sent the user back -- refused by the access claim, an unverified address, a
+// provider-side error. The callback is a top-level navigation, so without this
+// the user would be looking at a raw JSON error document instead of the app.
+const oidcError = params.get('girderOidcError');
+
+if (oidcError) {
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete('girderOidcError');
+    window.history.replaceState(null, '', cleanUrl.toString());
+
+    // `g:appload.after` rather than `.before`: the alert needs somewhere to
+    // render, and the layout does not exist until the app has.
+    girder.events.once('g:appload.after', () => {
+        girder.events.trigger('g:alert', {
+            icon: 'cancel',
+            text: oidcError,
+            type: 'danger',
+            timeout: 0
+        });
+    });
+}
 
 if (oidcCode) {
     // Drop the code from the visible URL before doing anything else, so a

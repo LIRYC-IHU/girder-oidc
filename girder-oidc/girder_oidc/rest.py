@@ -33,6 +33,16 @@ _STATE_SCOPE = 'oidc.state'
 _HANDOFF_SCOPE = 'oidc.handoff'
 
 
+def _appendQuery(redirect, key, value):
+    """Return ``redirect`` with ``key=value`` added to its query string."""
+    parsed = urlparse(redirect)
+    query = parse_qs(parsed.query)
+    query[key] = value
+    return urlunparse((
+        parsed.scheme, parsed.netloc, parsed.path, parsed.params,
+        urlencode(query, doseq=True), parsed.fragment))
+
+
 def _safeRedirect(redirect):
     """Reject open-redirect attempts: only same-origin absolute paths allowed."""
     if not redirect:
@@ -269,10 +279,10 @@ class Oidc(Resource):
         hide=True
     )
     def callback(self, state, code, error):
-        if error:
-            raise RestException("OIDC provider returned an error: '%s'." % error,
-                                code=502)
-        self.requireParams({'state': state, 'code': code})
+        # `error` is deliberately not looked at until the state and the browser
+        # binding below have been checked: until then this request is not known
+        # to belong to a login this server started, in this browser.
+        self.requireParams({'state': state})
 
         # force=True, then require our own marker field: loading by ACL would
         # answer 401 for a token that exists but isn't ours and 403 for one that
@@ -301,6 +311,25 @@ class Oidc(Resource):
                 'signing in again.', code=403)
 
         redirect = _safeRedirect(oidcData.get('redirect'))
+
+        # Past this point the login is genuine and the redirect is known, so a
+        # failure can be reported to the user on the page they started from.
+        # This whole route is a top-level browser navigation: a REST error would
+        # otherwise render as raw JSON in the address bar.
+        try:
+            return self._completeLogin(oidcData, redirect, code, error)
+        except RestException as e:
+            raise cherrypy.HTTPRedirect(
+                _appendQuery(redirect, 'girderOidcError', str(e)))
+
+    def _completeLogin(self, oidcData, redirect, code, error):
+        """Redeem the authorization code and sign the user in, or raise a
+        ``RestException`` whose message is meant for the user's eyes."""
+        if error:
+            raise RestException(
+                "Your identity provider returned an error: '%s'." % error,
+                code=502)
+        self.requireParams({'code': code})
 
         client = OidcClient()
         tokenResp = client.exchangeCode(
@@ -357,13 +386,8 @@ class Oidc(Resource):
         handoff['oidcHandoff'] = str(girderToken['_id'])
         Token().save(handoff)
 
-        parsed = urlparse(redirect)
-        query = parse_qs(parsed.query)
-        query['girderOidcCode'] = str(handoff['_id'])
-        updated = urlunparse((
-            parsed.scheme, parsed.netloc, parsed.path, parsed.params,
-            urlencode(query, doseq=True), parsed.fragment))
-        raise cherrypy.HTTPRedirect(updated)
+        raise cherrypy.HTTPRedirect(
+            _appendQuery(redirect, 'girderOidcCode', str(handoff['_id'])))
 
     @access.public
     @autoDescribeRoute(

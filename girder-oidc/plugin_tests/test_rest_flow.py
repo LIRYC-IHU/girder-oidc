@@ -5,6 +5,8 @@ would need a live provider for discovery. The checks under test both run before
 any provider call, so nothing here touches the network.
 """
 
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 
 from pytest_girder.assertions import assertStatus, assertStatusOk
@@ -153,6 +155,12 @@ def _callback(server, state, isJson=True):
         cookie='%s=%s' % (_STATE_COOKIE, SECRET), isJson=isJson)
 
 
+def _errorFrom(resp):
+    """The message the callback handed back to the web client, if any."""
+    location = resp.headers['Location']
+    return parse_qs(urlparse(location).query).get('girderOidcError', [None])[0]
+
+
 @pytest.mark.plugin('oidc')
 def test_callback_refuses_an_identity_without_the_required_claim(
         server, fakeProvider, accessFilter):
@@ -162,11 +170,35 @@ def test_callback_refuses_an_identity_without_the_required_claim(
                  email_verified=True, given_name='De', family_name='Nied',
                  resource_access={'other-app': {'roles': ['access']}})
 
-    resp = _callback(server, _stateToken())
-    assertStatus(resp, 403)
-    assert 'has not granted you access' in resp.json['message']
+    resp = _callback(server, _stateToken(), isJson=False)
+    # A refusal comes back as a redirect carrying the message, not as a REST
+    # error: this route is a top-level browser navigation, so a raw JSON error
+    # document is what the user would otherwise be left staring at.
+    assertStatus(resp, 303)
+    assert 'has not granted you access' in _errorFrom(resp)
     # The whole point of refusing this early: no account was provisioned.
     assert User().findOne({'email': 'denied@example.com'}) is None
+
+
+@pytest.mark.plugin('oidc')
+def test_callback_hands_a_provider_error_to_the_web_client(server):
+    """The provider reports a failed or cancelled login on the same redirect."""
+    resp = server.request(
+        path='/oidc/callback', method='GET',
+        params={'state': str(_stateToken()['_id']), 'error': 'access_denied'},
+        cookie='%s=%s' % (_STATE_COOKIE, SECRET), isJson=False)
+    assertStatus(resp, 303)
+    assert 'access_denied' in _errorFrom(resp)
+
+
+@pytest.mark.plugin('oidc')
+def test_provider_error_still_requires_a_valid_state(server):
+    """`error` is only acted on once the state and browser binding check out --
+    otherwise anyone could drive this endpoint into the redirect path."""
+    resp = server.request(
+        path='/oidc/callback', method='GET',
+        params={'state': str(_stateToken()['_id']), 'error': 'access_denied'})
+    assertStatus(resp, 403)
 
 
 @pytest.mark.plugin('oidc')
@@ -192,3 +224,56 @@ def test_callback_admits_everyone_when_no_claim_is_configured(server, fakeProvid
     resp = _callback(server, _stateToken(), isJson=False)
     assertStatus(resp, 303)
     assert User().findOne({'email': 'open@example.com'}) is not None
+
+
+@pytest.fixture
+def adminClaimOnRoles():
+    Setting().set(PluginSettings.ADMIN_CLAIM, 'resource_access.girder.roles')
+    Setting().set(PluginSettings.ADMIN_CLAIM_VALUE, 'admin')
+    yield
+    Setting().set(PluginSettings.ADMIN_CLAIM, '')
+    Setting().set(PluginSettings.ADMIN_CLAIM_VALUE, '')
+
+
+@pytest.mark.plugin('oidc')
+def test_admin_claim_is_synced_in_both_directions(
+        server, fakeProvider, adminClaimOnRoles, admin):
+    """Through the real callback, not just the helper: the site-admin flag
+    follows the claim on every login, granted *and* revoked.
+
+    The `admin` fixture is a second site admin, so the revocation below is not
+    blocked by the last-admin guard.
+    """
+    def login(roles):
+        fakeProvider(sub='sub-sync', email='sync@example.com', email_verified=True,
+                     given_name='Sy', family_name='Nc',
+                     resource_access={'girder': {'roles': roles}})
+        resp = _callback(server, _stateToken(), isJson=False)
+        assertStatus(resp, 303)
+        return User().findOne({'email': 'sync@example.com'})
+
+    # First login without the role: an ordinary account.
+    assert login(['access'])['admin'] is False
+    # The role is granted at the provider; the next login picks it up.
+    assert login(['access', 'admin'])['admin'] is True
+    # ...and withdrawing it at the provider takes it away again.
+    assert login(['access'])['admin'] is False
+
+
+@pytest.mark.plugin('oidc')
+def test_a_claim_absent_from_the_token_revokes_admin(
+        server, fakeProvider, adminClaimOnRoles, admin):
+    """The footgun of a full sync: a claim name that resolves to nothing is not
+    "leave it alone", it is "not an admin". A mistyped claim path therefore
+    demotes every OIDC user on their next login."""
+    fakeProvider(sub='sub-lost', email='lost@example.com', email_verified=True,
+                 given_name='Lo', family_name='St',
+                 resource_access={'girder': {'roles': ['access', 'admin']}})
+    assertStatus(_callback(server, _stateToken(), isJson=False), 303)
+    assert User().findOne({'email': 'lost@example.com'})['admin'] is True
+
+    # Same token, but the setting now points at a claim the token has no such
+    # thing as -- exactly `oidc.admin_claim = "admin"` against a keycloak token.
+    Setting().set(PluginSettings.ADMIN_CLAIM, 'admin')
+    assertStatus(_callback(server, _stateToken(), isJson=False), 303)
+    assert User().findOne({'email': 'lost@example.com'})['admin'] is False

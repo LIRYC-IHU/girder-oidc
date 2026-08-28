@@ -126,7 +126,17 @@ accounts**).
 Set **Required claim** to gate this. When it is set, a login is refused unless
 the ID token carries a matching claim — before an account is created, before a
 session is issued, and before anything is derived from the token. The refusal is
-logged with the identity's `sub` and the user is told to ask an administrator.
+logged with the identity's `sub`, and the user lands back on the page they
+started from with a dismissible message telling them to ask an administrator.
+
+That last part is general: every way the callback can fail after the login is
+established as genuine — a refusal here, an unverified address, an error the
+provider reports, a failed token exchange — is handed to the web client as a
+`girderOidcError` query param and shown as an alert. The callback is a top-level
+browser navigation, so the alternative is a raw JSON error document in the
+address bar. Failures *before* that point (an unknown or expired `state`, a
+login completed in a different browser) still answer a plain HTTP error, since
+at that stage the request is not known to belong to a real login.
 
 The claim name may use dots to descend into nested claims, which is what
 per-client entitlements normally look like. With Keycloak, giving the Girder
