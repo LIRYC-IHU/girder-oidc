@@ -22,6 +22,11 @@ def test_relative_path_allowed():
     '//evil.example.com',
     'relative/no/leading/slash',
     'javascript:alert(1)',
+    # Browsers normalise backslashes to '/', so these read as protocol-relative
+    # URLs to anything that resolves the path before pinning the host.
+    '/\\evil.example.com',
+    '/\\/evil.example.com',
+    '/path\\..\\evil.example.com',
 ])
 def test_open_redirects_rejected(value):
     with pytest.raises(RestException):

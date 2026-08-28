@@ -8,6 +8,7 @@ from girder.plugin import GirderPlugin, registerPluginStaticContent
 
 from . import rest
 from .account_guard import bindAccountGuards
+from .user import installVerificationEmailSuppression
 
 
 def checkOidcUser(event):
@@ -17,9 +18,12 @@ def checkOidcUser(event):
     """
     user = event.info['user']
     if user.get('oidc'):
+        # Deliberately not pointing at the password reset link: that flow is
+        # blocked for externally-managed accounts (see account_guard), so it
+        # would only send the user to a dead end.
         raise ValidationException(
-            "You don't have a password. Please log in with OIDC, or use the "
-            'password reset link.')
+            "You don't have a Girder password. Please use the single sign-on "
+            'button to log in.')
 
 
 class OidcPlugin(GirderPlugin):
@@ -31,6 +35,11 @@ class OidcPlugin(GirderPlugin):
              ('oidc.id', SortDir.ASCENDING)), {}))
 
         events.bind('no_password_login_attempt', 'oidc', checkOidcUser)
+
+        # Accounts provisioned from OIDC get no "verify your email" mail from
+        # girder: the provider already vouched for the address and we mark it
+        # verified. Local registrations still get theirs.
+        installVerificationEmailSuppression()
 
         # Let clients (and the account page) see that an account is OIDC-linked.
         # ADMIN level: visible to the user themselves and to site admins only.

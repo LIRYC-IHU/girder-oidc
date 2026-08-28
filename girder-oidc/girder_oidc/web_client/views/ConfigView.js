@@ -25,6 +25,7 @@ var ConfigView = View.extend({
                 buttonLabel: this.$('#g-oidc-button-label').val().trim(),
                 autoCreateUsers: this.$('.g-oidc-auto-create').is(':checked'),
                 ignoreRegistrationPolicy: this.$('.g-oidc-ignore-registration').is(':checked'),
+                trustUnverifiedEmail: this.$('.g-oidc-trust-unverified-email').is(':checked'),
                 adminClaim: this.$('#g-oidc-admin-claim').val().trim(),
                 adminClaimValue: this.$('#g-oidc-admin-claim-value').val().trim()
             };

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "girder-oidc"
-version = "0.2.0"
+version = "0.3.0"
 description = "Authenticate Girder users through an OpenID Connect provider."
 readme = "README.md"
 license = {text = "Apache 2.0"}
@@ -21,7 +21,10 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "girder>=5",
-    "authlib",
+    # Pinned: ID-token validation relies on authlib rejecting `alg: none` and
+    # refusing to import an RSA JWK as an HMAC key. Both are properties of the
+    # 1.x `authlib.jose` API, which 2.0 replaces with joserfc.
+    "authlib>=1.3,<2",
     "requests",
 ]
 

@@ -1,19 +1,10 @@
-FROM girder/girder:3-latest-py3
+# Girder 5 base. The plugin requires girder>=5 and uses Girder 5 APIs
+# (registerPluginStaticContent, ...); a Girder 3 base will not load it.
+FROM girder/girder:v5.0.9-py3
 
-# Install homepage plugin
-RUN pip install girder-homepage girder-jobs girder-dicom-viewer
+# Install the published plugin. Its wheel bundles the pre-built web client
+# assets (web_client/dist via package-data), so no separate `girder build`
+# step is needed in Girder 5.
+RUN pip install --no-cache-dir girder-oidc==0.2.0
 
-# # Copy the girder-oidc plugin into the container
-# COPY girder-oidc /plugins/girder-oidc
-
-# # Copy the girder-multi-part-zip plugin into the container
-# COPY girder-multi-part-zip /plugins/girder-multi-part-zip
-
-# # Install the girder-oidc plugin and the girder-multi-part-zip plugin
-# RUN pip install /plugins/girder-oidc /plugins/girder-multi-part-zip
-
-# # Build Girder frontend with the new plugins
-RUN girder build
-
-# Expose port for Girder web interface
 EXPOSE 8080

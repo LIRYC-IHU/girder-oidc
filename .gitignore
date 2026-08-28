@@ -4,3 +4,5 @@
 Thumbs.db
 pypi_token.txt
 logs/
+docker-compose.ihu.old.yml
+docker-compose.yml
