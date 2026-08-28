@@ -24,6 +24,9 @@ self-contained development stack for building and debugging the plugin locally.
   them) cannot change the profile, password, or two-factor settings owned by
   the identity provider. Enforced server-side, with the controls hidden in the
   web client.
+- **Access restricted by claim**: optionally require an ID-token claim before an
+  identity may sign in at all, so one identity provider realm can serve several
+  applications without every user of the realm getting an account here.
 - **Admin mapping from token claims**: optionally derive Girder site-admin from
   an ID-token claim, kept in sync (granted *and* revoked) on every login.
 - **Admin configuration UI** with a "Test connection" button that probes the
@@ -62,6 +65,7 @@ Open the Girder Admin Console → **Plugins** → **OIDC Login**. The settings a
 | **Automatically create Girder accounts** | Provision a new passwordless account the first time an identity logs in. |
 | **Ignore closed registration policy** | Allow OIDC account creation even when Girder registration is closed. |
 | **Trust the email claim without `email_verified`** | Off by default. See [Account linking](#account-linking-and-email_verified) — leaving this off is what stops an unverified address from claiming an account. |
+| **Required claim** / **Required claim value** | Restrict who may sign in at all — see [Restricting access](#restricting-access-by-claim). Blank admits every identity the provider authenticates. |
 | **Admin claim** / **Admin claim value** | Map Girder site-admin from a token claim — see below. |
 
 The defaults for Client ID/secret and the provider URLs can be seeded from the
@@ -110,6 +114,41 @@ Girder's copy of it is bypassed for these accounts.
   is the address an attacker would have supplied.
 - Local (non-OIDC) registrations are untouched and still receive Girder's
   verification email as usual.
+
+### Restricting access by claim
+
+By default any identity the provider is willing to authenticate gets in. That is
+usually not what you want when the provider's realm is shared with other
+applications: without a filter, every user of the realm who clicks the login
+button ends up with a Girder account (see **Automatically create Girder
+accounts**).
+
+Set **Required claim** to gate this. When it is set, a login is refused unless
+the ID token carries a matching claim — before an account is created, before a
+session is issued, and before anything is derived from the token. The refusal is
+logged with the identity's `sub` and the user is told to ask an administrator.
+
+The claim name may use dots to descend into nested claims, which is what
+per-client entitlements normally look like. With Keycloak, giving the Girder
+client a client role `access` and enabling *Add to ID token* on the built-in
+*client roles* mapper produces:
+
+```json
+"resource_access": { "girder": { "roles": ["access"] } }
+```
+
+so **Required claim** = `resource_access.girder.roles` and **Required claim
+value** = `access` admits exactly the users holding that role, and no one else.
+A flat `groups` claim works the same way (**Required claim value** =
+`/girder-users`). Matching follows the same rules as the admin claim below.
+
+This is a refusal *after* authentication: the user signs in at the provider and
+is then turned away by Girder. To stop them at the provider instead — no
+password prompt, no token issued — the check has to live there as well, e.g. a
+Keycloak authentication flow that denies access to users without the role. The
+two are complementary rather than redundant: the provider-side check gives a
+cleaner refusal, while this one still applies when a user is removed from the
+group, and travels with the plugin to providers you do not administer.
 
 ### Admin mapping from claims
 

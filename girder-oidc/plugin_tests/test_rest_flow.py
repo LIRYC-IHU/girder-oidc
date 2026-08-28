@@ -9,10 +9,14 @@ import pytest
 
 from pytest_girder.assertions import assertStatus, assertStatusOk
 
+from girder.models.setting import Setting
 from girder.models.token import Token
+from girder.models.user import User
 
+from girder_oidc import rest as oidc_rest
 from girder_oidc.rest import (_HANDOFF_SCOPE, _HANDOFF_TTL_SECONDS, _STATE_COOKIE,
                               _STATE_SCOPE, _STATE_TTL_MINUTES)
+from girder_oidc.settings import PluginSettings
 
 SECRET = 'the-browser-secret'
 
@@ -97,3 +101,94 @@ def test_exchange_rejects_unknown_code(server):
     resp = server.request(path='/oidc/exchange', method='POST',
                           params={'code': 'nope'})
     assertStatus(resp, 403)
+
+
+# --- The access filter --------------------------------------------------------
+#
+# `oidc.required_claim` refuses an identity the provider was willing to
+# authenticate. It is a post-authentication refusal by design -- the token
+# already exists by the time we see it -- so what these pin is that nothing is
+# left behind for a refused identity.
+
+
+class _FakeOidcClient:
+    """Stands in for the real client so the callback can be driven end to end
+    without a provider. Everything under test happens after token validation."""
+
+    claims = {}
+
+    def exchangeCode(self, code, codeVerifier, redirectUri):
+        return {'id_token': 'signed.id.token'}
+
+    def validateIdToken(self, idToken, nonce):
+        return dict(self.claims)
+
+
+@pytest.fixture
+def fakeProvider(monkeypatch):
+    monkeypatch.setattr(oidc_rest, 'OidcClient', _FakeOidcClient)
+
+    def setClaims(**claims):
+        _FakeOidcClient.claims = claims
+    yield setClaims
+    _FakeOidcClient.claims = {}
+
+
+@pytest.fixture
+def accessFilter():
+    """Gate logins on a keycloak per-client role, then put the settings back."""
+    Setting().set(PluginSettings.REQUIRED_CLAIM, 'resource_access.girder.roles')
+    Setting().set(PluginSettings.REQUIRED_CLAIM_VALUE, 'access')
+    yield
+    Setting().set(PluginSettings.REQUIRED_CLAIM, '')
+    Setting().set(PluginSettings.REQUIRED_CLAIM_VALUE, '')
+
+
+def _callback(server, state, isJson=True):
+    # A successful callback ends in a redirect with an empty body, so those
+    # calls have to opt out of pytest-girder's JSON parsing.
+    return server.request(
+        path='/oidc/callback', method='GET',
+        params={'state': str(state['_id']), 'code': 'auth-code'},
+        cookie='%s=%s' % (_STATE_COOKIE, SECRET), isJson=isJson)
+
+
+@pytest.mark.plugin('oidc')
+def test_callback_refuses_an_identity_without_the_required_claim(
+        server, fakeProvider, accessFilter):
+    # A realm shared with other applications: this identity holds the role of a
+    # different client, which must not admit it here.
+    fakeProvider(sub='sub-denied', email='denied@example.com',
+                 email_verified=True, given_name='De', family_name='Nied',
+                 resource_access={'other-app': {'roles': ['access']}})
+
+    resp = _callback(server, _stateToken())
+    assertStatus(resp, 403)
+    assert 'has not granted you access' in resp.json['message']
+    # The whole point of refusing this early: no account was provisioned.
+    assert User().findOne({'email': 'denied@example.com'}) is None
+
+
+@pytest.mark.plugin('oidc')
+def test_callback_admits_an_identity_carrying_the_required_claim(
+        server, fakeProvider, accessFilter):
+    fakeProvider(sub='sub-allowed', email='allowed@example.com',
+                 email_verified=True, given_name='Al', family_name='Lowed',
+                 resource_access={'girder': {'roles': ['access']}})
+
+    resp = _callback(server, _stateToken(), isJson=False)
+    # The callback ends in a redirect back to the web client with a handoff code.
+    assertStatus(resp, 303)
+    assert User().findOne({'email': 'allowed@example.com'}) is not None
+
+
+@pytest.mark.plugin('oidc')
+def test_callback_admits_everyone_when_no_claim_is_configured(server, fakeProvider):
+    """The filter is opt-in: an instance that has not set one must keep letting
+    every identity the provider authenticates in."""
+    fakeProvider(sub='sub-open', email='open@example.com', email_verified=True,
+                 given_name='O', family_name='Pen')
+
+    resp = _callback(server, _stateToken(), isJson=False)
+    assertStatus(resp, 303)
+    assert User().findOne({'email': 'open@example.com'}) is not None

@@ -40,6 +40,28 @@ def test_admin_claim_settings_round_trip(server, admin):
 
 
 @pytest.mark.plugin('oidc')
+def test_required_claim_settings_round_trip(server, admin):
+    # Blank by default: the access filter is opt-in.
+    resp = server.request(path='/oidc/configuration', method='GET', user=admin)
+    assertStatusOk(resp)
+    assert resp.json['requiredClaim'] == ''
+    assert resp.json['requiredClaimValue'] == ''
+
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'requiredClaim': 'resource_access.girder.roles',
+                'requiredClaimValue': 'access'})
+    assertStatusOk(resp)
+    assert resp.json['requiredClaim'] == 'resource_access.girder.roles'
+    assert resp.json['requiredClaimValue'] == 'access'
+
+    resp = server.request(path='/oidc/configuration', method='GET', user=admin)
+    assertStatusOk(resp)
+    assert resp.json['requiredClaim'] == 'resource_access.girder.roles'
+    assert resp.json['requiredClaimValue'] == 'access'
+
+
+@pytest.mark.plugin('oidc')
 def test_trust_unverified_email_defaults_off_and_round_trips(server, admin):
     resp = server.request(path='/oidc/configuration', method='GET', user=admin)
     assertStatusOk(resp)

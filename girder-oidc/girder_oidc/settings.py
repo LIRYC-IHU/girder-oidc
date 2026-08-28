@@ -32,6 +32,13 @@ class PluginSettings:
     # over, so this defaults to False. Only enable it for a provider that
     # vouches for every address it emits.
     TRUST_UNVERIFIED_EMAIL = 'oidc.trust_unverified_email'
+    # Optional: name of an ID-token claim that gates access to this instance at
+    # all. Blank disables the check, so every identity the provider is willing
+    # to authenticate may log in.
+    REQUIRED_CLAIM = 'oidc.required_claim'
+    # Value the required claim must match, with the same matching rules as the
+    # admin claim below.
+    REQUIRED_CLAIM_VALUE = 'oidc.required_claim_value'
     # Optional: name of an ID-token claim that confers Girder site-admin. Blank
     # disables admin mapping entirely.
     ADMIN_CLAIM = 'oidc.admin_claim'
@@ -91,6 +98,16 @@ def _defaultTrustUnverifiedEmail():
     return False
 
 
+@setting_utilities.default(PluginSettings.REQUIRED_CLAIM)
+def _defaultRequiredClaim():
+    return ''
+
+
+@setting_utilities.default(PluginSettings.REQUIRED_CLAIM_VALUE)
+def _defaultRequiredClaimValue():
+    return ''
+
+
 @setting_utilities.default(PluginSettings.ADMIN_CLAIM)
 def _defaultAdminClaim():
     return ''
@@ -106,6 +123,8 @@ def _defaultAdminClaimValue():
     PluginSettings.CLIENT_SECRET,
     PluginSettings.SCOPES,
     PluginSettings.BUTTON_LABEL,
+    PluginSettings.REQUIRED_CLAIM,
+    PluginSettings.REQUIRED_CLAIM_VALUE,
     PluginSettings.ADMIN_CLAIM,
     PluginSettings.ADMIN_CLAIM_VALUE,
 })

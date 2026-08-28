@@ -10,7 +10,8 @@ from girder.utility import mail_utils
 
 from girder_oidc.settings import PluginSettings
 from girder_oidc.user import (_SUPPRESSION_MARKER, claimAssertsVerifiedEmail,
-                              claimGrantsAdmin, createOrReuseUser,
+                              claimGrantsAccess, claimGrantsAdmin,
+                              createOrReuseUser,
                               installVerificationEmailSuppression)
 
 
@@ -153,6 +154,42 @@ def test_claim_grants_admin_semantics():
     assert claimGrantsAdmin({'is_admin': False}, 'is_admin', '') is False
     # Missing claim is not admin.
     assert claimGrantsAdmin({}, 'groups', 'x') is False
+
+
+def test_claim_lookup_descends_into_nested_claims():
+    """Per-client entitlements are nested, not top-level: keycloak puts them
+    under resource_access.<client_id>.roles."""
+    claims = {'resource_access': {'girder': {'roles': ['access']},
+                                  'other-app': {'roles': ['access']}}}
+    assert claimGrantsAccess(claims, 'resource_access.girder.roles', 'access') is True
+    # The role of a *different* client must not admit anyone here.
+    assert claimGrantsAccess(
+        claims, 'resource_access.absent-app.roles', 'access') is False
+    # A partial path that lands on a dict is not a match.
+    assert claimGrantsAccess(claims, 'resource_access.girder', 'access') is False
+    # A literal dotted key still wins over the path split.
+    assert claimGrantsAccess({'a.b': 'yes'}, 'a.b', 'yes') is True
+
+
+def test_claim_grants_access_semantics():
+    # Opt-in: with no claim configured every authenticated identity is admitted.
+    assert claimGrantsAccess({}, '', '') is True
+    # List claim: membership.
+    assert claimGrantsAccess({'groups': ['/girder-users']}, 'groups',
+                             '/girder-users') is True
+    assert claimGrantsAccess({'groups': ['/other']}, 'groups',
+                             '/girder-users') is False
+    # List claim, blank value: any non-empty list.
+    assert claimGrantsAccess({'groups': ['x']}, 'groups', '') is True
+    assert claimGrantsAccess({'groups': []}, 'groups', '') is False
+    # Scalar claim: equality, then truthiness.
+    assert claimGrantsAccess({'tier': 'staff'}, 'tier', 'staff') is True
+    assert claimGrantsAccess({'tier': 'guest'}, 'tier', 'staff') is False
+    assert claimGrantsAccess({'may_login': True}, 'may_login', '') is True
+    assert claimGrantsAccess({'may_login': False}, 'may_login', '') is False
+    # A configured claim the token does not carry refuses -- this is the whole
+    # point of the filter, so it must not fail open.
+    assert claimGrantsAccess({}, 'groups', '/girder-users') is False
 
 
 @pytest.mark.plugin('oidc')

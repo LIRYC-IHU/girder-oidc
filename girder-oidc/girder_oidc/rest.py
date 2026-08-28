@@ -1,5 +1,6 @@
 import datetime
 import hmac
+import logging
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import cherrypy
@@ -14,8 +15,10 @@ from girder.models.user import User
 
 from .client import OidcClient, generate_nonce, generate_pkce_pair, probeProvider
 from .settings import PluginSettings
-from .user import claimAssertsVerifiedEmail, claimGrantsAdmin, createOrReuseUser
+from .user import (claimAssertsVerifiedEmail, claimGrantsAccess, claimGrantsAdmin,
+                   createOrReuseUser)
 
+logger = logging.getLogger(__name__)
 
 # Cookie that ties an in-flight login to the browser that started it.
 _STATE_COOKIE = 'girderOidcState'
@@ -116,6 +119,9 @@ class Oidc(Resource):
                 PluginSettings.IGNORE_REGISTRATION_POLICY),
             'trustUnverifiedEmail': settings.get(
                 PluginSettings.TRUST_UNVERIFIED_EMAIL),
+            'requiredClaim': settings.get(PluginSettings.REQUIRED_CLAIM),
+            'requiredClaimValue': settings.get(
+                PluginSettings.REQUIRED_CLAIM_VALUE),
             'adminClaim': settings.get(PluginSettings.ADMIN_CLAIM),
             'adminClaimValue': settings.get(PluginSettings.ADMIN_CLAIM_VALUE),
         }
@@ -141,6 +147,11 @@ class Oidc(Resource):
                'provider does not assert email_verified. Only enable for a '
                'provider that vouches for every address it emits.',
                dataType='boolean', required=False)
+        .param('requiredClaim', 'ID-token claim an identity must satisfy to log '
+               'in at all (blank to let every identity the provider '
+               'authenticates in).', required=False)
+        .param('requiredClaimValue', 'Required value of the access claim (blank '
+               'means any truthy value).', required=False)
         .param('adminClaim', 'ID-token claim that confers site-admin (blank to '
                'disable admin mapping).', required=False)
         .param('adminClaimValue', 'Required value of the admin claim (blank means '
@@ -149,6 +160,7 @@ class Oidc(Resource):
     def setConfiguration(self, enabled, clientId, clientSecret, publicUrl,
                          internalUrl, scopes, buttonLabel, autoCreateUsers,
                          ignoreRegistrationPolicy, trustUnverifiedEmail,
+                         requiredClaim, requiredClaimValue,
                          adminClaim, adminClaimValue):
         settings = Setting()
         if enabled is not None:
@@ -174,6 +186,10 @@ class Oidc(Resource):
         if trustUnverifiedEmail is not None:
             settings.set(PluginSettings.TRUST_UNVERIFIED_EMAIL,
                          trustUnverifiedEmail)
+        if requiredClaim is not None:
+            settings.set(PluginSettings.REQUIRED_CLAIM, requiredClaim)
+        if requiredClaimValue is not None:
+            settings.set(PluginSettings.REQUIRED_CLAIM_VALUE, requiredClaimValue)
         if adminClaim is not None:
             settings.set(PluginSettings.ADMIN_CLAIM, adminClaim)
         if adminClaimValue is not None:
@@ -294,12 +310,27 @@ class Oidc(Resource):
             raise RestException('OIDC token response had no id_token.', code=502)
 
         claims = client.validateIdToken(idToken, oidcData['nonce'])
+
+        settings = Setting()
+        # Before anything is derived from the token, and well before an account
+        # could be provisioned: an identity the instance does not admit must
+        # leave no trace here beyond this log line.
+        if not claimGrantsAccess(
+                claims, settings.get(PluginSettings.REQUIRED_CLAIM),
+                settings.get(PluginSettings.REQUIRED_CLAIM_VALUE)):
+            logger.info(
+                'oidc: refused login for sub=%s -- the ID token does not carry '
+                'the configured access claim.', claims.get('sub'))
+            raise RestException(
+                'Your identity provider signed you in, but this Girder instance '
+                'has not granted you access. Ask an administrator to add you to '
+                'the group that is allowed to use it.', code=403)
+
         email = claims.get('email')
         if not email:
             raise RestException('OIDC ID token did not include an email claim.',
                                 code=502)
 
-        settings = Setting()
         isAdmin = claimGrantsAdmin(
             claims, settings.get(PluginSettings.ADMIN_CLAIM),
             settings.get(PluginSettings.ADMIN_CLAIM_VALUE))

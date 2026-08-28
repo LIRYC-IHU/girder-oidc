@@ -128,16 +128,29 @@ def _resolveNames(firstName, lastName, fullName, userName, email):
     return first or base, last or base
 
 
-def claimGrantsAdmin(claims, claimName, claimValue):
-    """Decide whether an ID token's claims confer Girder site-admin.
+def _resolveClaim(claims, claimName):
+    """Look up a claim by name, descending through ``.``-separated segments.
 
-    Returns ``None`` when admin mapping is disabled (no claim configured), so the
-    caller can leave the existing admin flag untouched. Otherwise returns a bool:
-    list claims match on membership, scalar claims on equality, and a blank
-    configured value matches any truthy claim (e.g. a boolean ``is_admin``)."""
-    if not claimName:
-        return None
-    actual = claims.get(claimName)
+    Per-client entitlements are usually nested rather than top-level -- keycloak
+    puts them under ``resource_access.<client_id>.roles`` -- so a flat lookup
+    would only ever see the outer object. A literal key still wins over the path
+    split, in case a provider genuinely emits a claim with a dot in its name.
+    """
+    if claimName in claims:
+        return claims[claimName]
+    value = claims
+    for part in claimName.split('.'):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def _claimMatches(claims, claimName, claimValue):
+    """Whether ``claimName`` satisfies ``claimValue``: list claims match on
+    membership, scalar claims on equality, and a blank configured value matches
+    any truthy claim (e.g. a boolean ``is_admin``)."""
+    actual = _resolveClaim(claims, claimName)
     if isinstance(actual, (list, tuple, set)):
         if claimValue:
             return claimValue in [str(v) for v in actual]
@@ -145,6 +158,35 @@ def claimGrantsAdmin(claims, claimName, claimValue):
     if claimValue:
         return str(actual) == claimValue
     return bool(actual)
+
+
+def claimGrantsAccess(claims, claimName, claimValue):
+    """Whether an ID token's claims entitle the identity to use this instance.
+
+    Returns ``True`` when no claim is configured: the filter is opt-in, and an
+    instance that has not set one delegates the decision entirely to the
+    provider. Otherwise the claim decides, by :func:`_claimMatches`.
+
+    This is deliberately a post-authentication refusal. The provider has already
+    authenticated the user by the time we see these claims; what the check buys
+    is that an identity outside the configured group gets no Girder account and
+    no session, which matters most on a provider whose realm is shared with
+    other applications.
+    """
+    if not claimName:
+        return True
+    return _claimMatches(claims, claimName, claimValue)
+
+
+def claimGrantsAdmin(claims, claimName, claimValue):
+    """Decide whether an ID token's claims confer Girder site-admin.
+
+    Returns ``None`` when admin mapping is disabled (no claim configured), so the
+    caller can leave the existing admin flag untouched. Otherwise the claim
+    decides, by :func:`_claimMatches`."""
+    if not claimName:
+        return None
+    return _claimMatches(claims, claimName, claimValue)
 
 
 def claimAssertsVerifiedEmail(claims):

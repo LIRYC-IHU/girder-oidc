@@ -45,6 +45,16 @@ form.g-oidc-config-form(role="form")
         |  Trust the email claim even without <code>email_verified</code>
     p.g-oidc-field-help Off by default. Girder matches and creates accounts by email address, so with this on anyone who can set an address at the provider can claim the matching Girder account. Only enable it for a provider that verifies every address it emits but omits the claim.
   .form-group
+    label.control-label(for="g-oidc-required-claim") Required claim (optional)
+    input#g-oidc-required-claim.input-sm.form-control(type="text", value=config.requiredClaim,
+        placeholder="e.g. groups, or resource_access.girder.roles")
+    p.g-oidc-field-help Restricts who may sign in. When set, an identity is refused unless its ID token carries this claim &mdash; no account is created and no session is issued. Dots descend into nested claims, so <code>resource_access.girder.roles</code> reads a keycloak per-client role. Leave blank to admit every identity the provider authenticates.
+  .form-group
+    label.control-label(for="g-oidc-required-claim-value") Required claim value (optional)
+    input#g-oidc-required-claim-value.input-sm.form-control(type="text",
+        value=config.requiredClaimValue, placeholder="Required value, e.g. access")
+    p.g-oidc-field-help For a list claim (groups/roles) this is the required member; for a scalar, the required value. Leave blank to match any truthy value.
+  .form-group
     label.control-label(for="g-oidc-admin-claim") Admin claim (optional)
     input#g-oidc-admin-claim.input-sm.form-control(type="text", value=config.adminClaim,
         placeholder="e.g. groups, roles, or is_admin")
