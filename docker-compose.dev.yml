@@ -66,13 +66,17 @@ services:
     working_dir: /plugins/girder-oidc/girder_oidc/web_client
     volumes:
       - ./girder-oidc:/plugins/girder-oidc
-    # Install deps (@girder/core resolves to the girder source baked into the
-    # image at /girder/girder/web) then rebuild dist on every source change.
+    # Install deps, then rebuild dist on every source change.
     entrypoint:
       - /bin/sh
       - -c
       - |
         npm install
+        # @girder/core is a types-only import (vite-env.d.ts) and ships with the
+        # girder source baked into this image rather than on npm. It is added
+        # here instead of in package.json because a file: path pointing outside
+        # the project makes `npm ci` unusable everywhere else, CI included.
+        [ -d /girder/girder/web ] && npm install --no-save --no-package-lock file:/girder/girder/web
         exec npm run dev
     restart: unless-stopped
 

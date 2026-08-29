@@ -29,7 +29,10 @@ var ConfigView = View.extend({
                 requiredClaim: this.$('#g-oidc-required-claim').val().trim(),
                 requiredClaimValue: this.$('#g-oidc-required-claim-value').val().trim(),
                 adminClaim: this.$('#g-oidc-admin-claim').val().trim(),
-                adminClaimValue: this.$('#g-oidc-admin-claim-value').val().trim()
+                adminClaimValue: this.$('#g-oidc-admin-claim-value').val().trim(),
+                groupsClaim: this.$('#g-oidc-groups-claim').val().trim(),
+                groupNamePrefix: this.$('#g-oidc-group-name-prefix').val(),
+                groupsAuthoritative: this.$('.g-oidc-groups-authoritative').is(':checked')
             };
             // Only send the secret when the admin actually typed one.
             const secret = this.$('#g-oidc-client-secret').val();

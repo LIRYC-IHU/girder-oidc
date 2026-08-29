@@ -167,3 +167,35 @@ def test_test_connection_requires_admin(server, admin, normalUser):
         path='/oidc/configuration/test', method='POST', user=normalUser,
         params={'publicUrl': 'https://idp.example.com'})
     assertStatus(resp, 403)
+
+
+@pytest.mark.plugin('oidc')
+def test_group_sync_settings_round_trip(server, admin):
+    # Off by default, and the provider owns membership once it is on.
+    resp = server.request(path='/oidc/configuration', method='GET', user=admin)
+    assertStatusOk(resp)
+    assert resp.json['groupsClaim'] == ''
+    assert resp.json['groupNamePrefix'] == ''
+    assert resp.json['groupsAuthoritative'] is True
+
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=admin,
+        params={'groupsClaim': 'groups', 'groupNamePrefix': 'IdP: ',
+                'groupsAuthoritative': False})
+    assertStatusOk(resp)
+
+    resp = server.request(path='/oidc/configuration', method='GET', user=admin)
+    assertStatusOk(resp)
+    assert resp.json['groupsClaim'] == 'groups'
+    assert resp.json['groupNamePrefix'] == 'IdP: '
+    assert resp.json['groupsAuthoritative'] is False
+
+
+@pytest.mark.plugin('oidc')
+def test_group_sync_settings_require_admin(server, admin, normalUser):
+    # `admin` first: girder makes the very first account it creates a site
+    # admin, so without it `normalUser` would not be an ordinary user at all.
+    resp = server.request(
+        path='/oidc/configuration', method='PUT', user=normalUser,
+        params={'groupsClaim': 'groups'})
+    assertStatus(resp, 403)

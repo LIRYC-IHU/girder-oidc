@@ -29,26 +29,46 @@ self-contained development stack for building and debugging the plugin locally.
   applications without every user of the realm getting an account here.
 - **Admin mapping from token claims**: optionally derive Girder site-admin from
   an ID-token claim, kept in sync (granted *and* revoked) on every login.
+- **Groups mirrored from the provider**: optionally turn a groups/roles claim
+  into Girder groups, so provider-side membership grants access to collections
+  through Girder's ordinary access control lists — with no per-user bookkeeping
+  on the collection.
 - **Admin configuration UI** with a "Test connection" button that probes the
   provider's discovery document and JWKS before you save.
 
 ## Installation
 
-Install the plugin into the environment running Girder, then restart Girder:
+Install the plugin from PyPI into the environment running Girder, then restart
+Girder:
 
 ```bash
 pip install girder-oidc
 ```
 
-Or from a checkout of this repository:
+Pin it like any other dependency when you deploy (`pip install
+girder-oidc==0.5.0`); the published wheels are attached to each
+[GitHub release](https://github.com/LIRYC-IHU/girder-oidc/releases) as well.
+
+The wheel ships the pre-built web client as package data, which Girder 5 serves
+straight from the installed package — there is no separate `girder build` step.
+In a container, that makes the whole installation one line:
+
+```dockerfile
+FROM girder/girder:v5.0.9-py3
+RUN pip install --no-cache-dir girder-oidc==0.5.0
+```
+
+To install from a checkout of this repository instead, build the web client
+first — a source install has no bundle in it:
 
 ```bash
+(cd girder-oidc/girder_oidc/web_client && npm ci && npm run build)
 pip install ./girder-oidc
 ```
 
 The plugin registers itself through the `girder.plugin` entry point; no manual
 enabling step is required beyond turning OIDC on in the configuration page
-(below).
+(below). It requires `girder >= 5` and Python 3.10+.
 
 ## Configuration
 
@@ -67,6 +87,9 @@ Open the Girder Admin Console → **Plugins** → **OIDC Login**. The settings a
 | **Trust the email claim without `email_verified`** | Off by default. See [Account linking](#account-linking-and-email_verified) — leaving this off is what stops an unverified address from claiming an account. |
 | **Required claim** / **Required claim value** | Restrict who may sign in at all — see [Restricting access](#restricting-access-by-claim). Blank admits every identity the provider authenticates. |
 | **Admin claim** / **Admin claim value** | Map Girder site-admin from a token claim — see below. |
+| **Groups claim** | Claim whose values are mirrored into Girder groups — see [Groups from the provider](#groups-from-the-provider). Blank disables the mirroring. |
+| **Mirrored group name prefix** | Put in front of a claim value when the Girder group is created, e.g. `IdP: `. Keeps mirrored groups in a name space of their own. |
+| **The provider owns membership of mirrored groups** | On by default: a user who no longer carries a group in their token is removed from it at the next login. Off means the sync only ever adds. |
 
 The defaults for Client ID/secret and the provider URLs can be seeded from the
 environment (`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_PUBLIC_URL`,
@@ -190,6 +213,54 @@ value**:
 | Scalar (e.g. `role`) | set | the value equals the claim |
 | Scalar / boolean (e.g. `is_admin`) | blank | the claim is truthy |
 
+### Groups from the provider
+
+Girder already knows how to give a set of people access to something: groups are
+first-class entries in every ACL, and a collection shared with a group is
+readable by its members and shows up in their listings. What was missing was the
+link between "group at the provider" and "group in Girder" — that is all this
+feature adds. The permission model itself is untouched.
+
+Set **Groups claim** (typically `groups`, or `resource_access.<client>.roles` for
+Keycloak client roles) and, at every login, each value of that claim gets a
+Girder group:
+
+- a group is created the first time a value is seen, private, and stamped with a
+  marker recording the claim value it mirrors;
+- the user is added to the groups their token carries, and — unless you turn
+  **The provider owns membership of mirrored groups** off — removed from the
+  mirrored ones it no longer carries;
+- the marker, not the name, is what ties a group to the provider, so you can
+  rename a mirrored group in Girder without breaking the link.
+
+Granting access is then the ordinary Girder gesture, done once: **collection →
+Access control → add the group → pick a level**, ticking *include subfolders* to
+push it down an existing tree. Folders created afterwards inherit their parent's
+ACL, and nothing has to be written per user.
+
+Keycloak emits group *paths* (`/liryc/recherche`); the leading slash is dropped
+and the rest kept, since that is what makes the value unique. To get the claim at
+all, add a *Group Membership* mapper (or *Client Roles* for roles) to the Girder
+client and tick **Add to ID token**.
+
+Three behaviours are worth knowing before you turn this on:
+
+- **Groups you create by hand are never touched.** Only groups carrying the
+  plugin's marker are added to or removed from. If a claim value collides with
+  the name of a group that is not one of ours, the value is *ignored* rather than
+  taken over, and the refusal is logged — an existing "Chercheurs" group must not
+  silently start taking its members from the provider. Set a **Mirrored group
+  name prefix** to keep the two name spaces apart.
+- **A missing claim revokes nothing.** A token that carries no groups claim at
+  all is treated as "no information" (and logged as a warning), not as "this user
+  is in no group" — otherwise switching a mapper off at the provider would strip
+  every membership on the instance, one login at a time. A claim that is present
+  and empty *does* revoke.
+- **Membership refreshes at login, not continuously.** Someone removed from a
+  group at the provider keeps their Girder access until their next sign-in. If
+  that window matters, shorten Girder's session lifetime (Admin console →
+  Server configuration → **Cookie lifetime**) so logins happen more often.
+
 ### Account lockdown
 
 For OIDC-linked accounts the identity provider owns the profile, password, and
@@ -282,6 +353,52 @@ installed editable.
 
 To change the OIDC fixtures (client, test user), edit `dex/config.yaml` then
 `docker compose -f docker-compose.dev.yml restart dex`.
+
+### Tests without the stack
+
+`make test` runs the suite in the container, against the girder version the dev
+image pins. To run it directly instead — which is also what CI does, against the
+newest girder 5.x — point pytest at any running mongod:
+
+```bash
+pip install "girder>=5" "authlib>=1.3,<2" pytest pytest-girder
+pip install -e ./girder-oidc
+(cd girder-oidc && pytest -q plugin_tests --mongo-uri mongodb://localhost:27017)
+```
+
+`pytest --mock-db` is not an option: mongomock does not implement the tz-aware
+codec options girder 5 uses. Running both this and `make test` is worth the
+minute it costs — the two exercise different girder versions, and APIs the plugin
+touches (the `email.verification` event, `girder.logger`) differ between them.
+
+## Releases and packaging
+
+Two GitHub Actions workflows drive this:
+
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| `.github/workflows/ci.yml` | push to `main`, pull requests | Runs the plugin test suite against a real MongoDB on the floor and ceiling of the supported Python range, and builds the wheel + sdist (web client included) as a smoke test. |
+| `.github/workflows/release.yml` | a `v*` tag (or manual dispatch) | Rebuilds the distributions, refuses to continue if the tag disagrees with the version in `pyproject.toml`, creates the GitHub release with generated notes, and attaches the wheel and sdist. |
+
+Cutting a release is therefore:
+
+```bash
+# bump `version` in girder-oidc/pyproject.toml first, then:
+git tag -a v0.5.0 -m 'v0.5.0'
+git push origin v0.5.0
+```
+
+Both build jobs assert that the wheel actually contains
+`girder_oidc/web_client/dist/`: a wheel without it installs cleanly and then
+fails when Girder loads the plugin, which is not a failure worth discovering in
+production.
+
+Publishing to PyPI is opt-in and off by default — a release produces GitHub
+assets, and `twine upload` stays manual. To let the workflow do it, configure
+[trusted publishing](https://docs.pypi.org/trusted-publishers/) for this
+repository on PyPI (workflow `release.yml`, environment `pypi`) and set the
+repository variable `PUBLISH_TO_PYPI` to `true`. No API token is stored either
+way.
 
 ## Funding
 This project was financed by the french Agence Nationale de la Recherche (ANR) - ANR-23-RHUS-0015

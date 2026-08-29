@@ -46,6 +46,20 @@ class PluginSettings:
     # is the required member; for a scalar it is the required value; blank means
     # "claim is truthy" (e.g. a boolean is_admin claim).
     ADMIN_CLAIM_VALUE = 'oidc.admin_claim_value'
+    # Optional: name of an ID-token claim whose values are mirrored into Girder
+    # groups, so that provider-side groups can be used in collection ACLs. Blank
+    # disables group synchronisation entirely.
+    GROUPS_CLAIM = 'oidc.groups_claim'
+    # Prefix put in front of a claim value when the matching Girder group is
+    # created, e.g. 'IdP: '. Useful to keep mirrored groups apart from the ones
+    # an administrator maintains by hand (a name collision is refused, not
+    # adopted).
+    GROUP_NAME_PREFIX = 'oidc.group_name_prefix'
+    # Whether the provider is authoritative over the groups it mirrors: with
+    # this on, a user who no longer carries a group in their token is removed
+    # from it at the next login. Groups the plugin did not create are never
+    # touched either way.
+    GROUPS_AUTHORITATIVE = 'oidc.groups_authoritative'
 
 
 @setting_utilities.default(PluginSettings.ENABLED)
@@ -118,6 +132,21 @@ def _defaultAdminClaimValue():
     return ''
 
 
+@setting_utilities.default(PluginSettings.GROUPS_CLAIM)
+def _defaultGroupsClaim():
+    return ''
+
+
+@setting_utilities.default(PluginSettings.GROUP_NAME_PREFIX)
+def _defaultGroupNamePrefix():
+    return ''
+
+
+@setting_utilities.default(PluginSettings.GROUPS_AUTHORITATIVE)
+def _defaultGroupsAuthoritative():
+    return True
+
+
 @setting_utilities.validator({
     PluginSettings.CLIENT_ID,
     PluginSettings.CLIENT_SECRET,
@@ -127,6 +156,8 @@ def _defaultAdminClaimValue():
     PluginSettings.REQUIRED_CLAIM_VALUE,
     PluginSettings.ADMIN_CLAIM,
     PluginSettings.ADMIN_CLAIM_VALUE,
+    PluginSettings.GROUPS_CLAIM,
+    PluginSettings.GROUP_NAME_PREFIX,
 })
 def _validateStringSettings(doc):
     if not isinstance(doc['value'], str):
@@ -138,6 +169,7 @@ def _validateStringSettings(doc):
     PluginSettings.AUTO_CREATE_USERS,
     PluginSettings.IGNORE_REGISTRATION_POLICY,
     PluginSettings.TRUST_UNVERIFIED_EMAIL,
+    PluginSettings.GROUPS_AUTHORITATIVE,
 })
 def _validateBooleanSettings(doc):
     if not isinstance(doc['value'], bool):

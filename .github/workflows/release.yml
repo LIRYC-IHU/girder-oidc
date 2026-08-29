@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v0.5.0)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build wheel and sdist
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: girder-oidc/girder_oidc/web_client/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check the tag matches the packaged version
+        # A tag that disagrees with pyproject.toml produces a release whose
+        # assets are named after a different version -- caught here, before
+        # anything is published.
+        id: version
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          version=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('girder-oidc/pyproject.toml').read_text())['project']['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match version $version in girder-oidc/pyproject.toml"
+            exit 1
+          fi
+
+      - name: Build the web client
+        working-directory: girder-oidc/girder_oidc/web_client
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the distributions
+        working-directory: girder-oidc
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - name: Check the bundle made it into the wheel
+        working-directory: girder-oidc
+        run: |
+          python - <<'PY'
+          import pathlib, zipfile
+          wheel = next(pathlib.Path('dist').glob('*.whl'))
+          names = zipfile.ZipFile(wheel).namelist()
+          for expected in ('girder_oidc/web_client/dist/girder-plugin-oidc.umd.cjs',
+                           'girder_oidc/web_client/dist/style.css'):
+              assert expected in names, f'{expected} missing from {wheel.name}'
+          print(f'{wheel.name}: web client bundled')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: girder-oidc/dist/*
+          if-no-files-found: error
+
+  github-release:
+    name: Publish the GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+
+      - name: Create (or update) the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+  pypi:
+    name: Publish to PyPI
+    needs: [build, github-release]
+    # Opt-in: set the repository variable PUBLISH_TO_PYPI to "true" once trusted
+    # publishing is configured for this repo on PyPI (Settings → Publishing).
+    # Until then a release only produces GitHub assets, and uploading to PyPI
+    # stays a manual `twine upload`.
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted publishing: PyPI mints a short-lived token from this OIDC
+      # identity, so no API token is stored in the repository.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

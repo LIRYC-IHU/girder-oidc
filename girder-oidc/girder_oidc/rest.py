@@ -14,6 +14,7 @@ from girder.models.token import Token
 from girder.models.user import User
 
 from .client import OidcClient, generate_nonce, generate_pkce_pair, probeProvider
+from .groups import syncUserGroups
 from .settings import PluginSettings
 from .user import (claimAssertsVerifiedEmail, claimGrantsAccess, claimGrantsAdmin,
                    createOrReuseUser)
@@ -134,6 +135,10 @@ class Oidc(Resource):
                 PluginSettings.REQUIRED_CLAIM_VALUE),
             'adminClaim': settings.get(PluginSettings.ADMIN_CLAIM),
             'adminClaimValue': settings.get(PluginSettings.ADMIN_CLAIM_VALUE),
+            'groupsClaim': settings.get(PluginSettings.GROUPS_CLAIM),
+            'groupNamePrefix': settings.get(PluginSettings.GROUP_NAME_PREFIX),
+            'groupsAuthoritative': settings.get(
+                PluginSettings.GROUPS_AUTHORITATIVE),
         }
 
     @access.admin
@@ -166,12 +171,21 @@ class Oidc(Resource):
                'disable admin mapping).', required=False)
         .param('adminClaimValue', 'Required value of the admin claim (blank means '
                'any truthy value).', required=False)
+        .param('groupsClaim', 'ID-token claim whose values are mirrored into '
+               'Girder groups, for use in collection ACLs (blank to disable '
+               'group synchronisation).', required=False)
+        .param('groupNamePrefix', 'Prefix for the name of a Girder group '
+               'created from a claim value.', required=False)
+        .param('groupsAuthoritative', 'Remove a user from a mirrored group when '
+               'their token no longer carries it.', dataType='boolean',
+               required=False)
     )
     def setConfiguration(self, enabled, clientId, clientSecret, publicUrl,
                          internalUrl, scopes, buttonLabel, autoCreateUsers,
                          ignoreRegistrationPolicy, trustUnverifiedEmail,
                          requiredClaim, requiredClaimValue,
-                         adminClaim, adminClaimValue):
+                         adminClaim, adminClaimValue, groupsClaim,
+                         groupNamePrefix, groupsAuthoritative):
         settings = Setting()
         if enabled is not None:
             settings.set(PluginSettings.ENABLED, enabled)
@@ -204,6 +218,12 @@ class Oidc(Resource):
             settings.set(PluginSettings.ADMIN_CLAIM, adminClaim)
         if adminClaimValue is not None:
             settings.set(PluginSettings.ADMIN_CLAIM_VALUE, adminClaimValue)
+        if groupsClaim is not None:
+            settings.set(PluginSettings.GROUPS_CLAIM, groupsClaim)
+        if groupNamePrefix is not None:
+            settings.set(PluginSettings.GROUP_NAME_PREFIX, groupNamePrefix)
+        if groupsAuthoritative is not None:
+            settings.set(PluginSettings.GROUPS_AUTHORITATIVE, groupsAuthoritative)
         return self.getConfiguration()
 
     @access.admin
@@ -371,6 +391,13 @@ class Oidc(Resource):
             userName=claims.get('preferred_username'),
             fullName=claims.get('name'), admin=isAdmin,
             emailVerified=claimAssertsVerifiedEmail(claims))
+
+        # After provisioning (the user must exist to be a member of anything)
+        # and before the session token: what the provider says about this login
+        # decides which mirrored groups -- and so which collections -- the
+        # session can reach.
+        syncUserGroups(user, claims)
+
         User().verifyLogin(user)
 
         girderToken = Token().createToken(user)

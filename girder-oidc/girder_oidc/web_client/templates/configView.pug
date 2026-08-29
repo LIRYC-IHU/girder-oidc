@@ -64,6 +64,22 @@ form.g-oidc-config-form(role="form")
     input#g-oidc-admin-claim-value.input-sm.form-control(type="text", value=config.adminClaimValue,
         placeholder="Required value, e.g. girder-admins")
     p.g-oidc-field-help For a list claim (groups/roles) this is the required member; for a scalar, the required value. Leave blank to match any truthy value (e.g. a boolean claim).
+  .form-group
+    label.control-label(for="g-oidc-groups-claim") Groups claim (optional)
+    input#g-oidc-groups-claim.input-sm.form-control(type="text", value=config.groupsClaim,
+        placeholder="e.g. groups, or resource_access.girder.roles")
+    p.g-oidc-field-help Mirrors the provider's groups into Girder groups, so they can be used in the access control list of a collection or folder like any other group. Each value of the claim gets a Girder group, created on first sight; membership is reconciled at each login. Groups you create by hand in Girder are never modified. Leave blank to disable.
+  .form-group
+    label.control-label(for="g-oidc-group-name-prefix") Mirrored group name prefix (optional)
+    input#g-oidc-group-name-prefix.input-sm.form-control(type="text",
+        value=config.groupNamePrefix, placeholder="e.g. \"IdP: \"")
+    p.g-oidc-field-help Put in front of the claim value when a group is created. If a Girder group of that name already exists and is not one of ours, the claim value is ignored rather than taken over &mdash; a prefix keeps the two name spaces apart.
+  .form-group
+    .checkbox
+      label
+        input.g-oidc-groups-authoritative(type="checkbox", checked=config.groupsAuthoritative)
+        |  The provider owns membership of mirrored groups
+    p.g-oidc-field-help On by default: a user whose token no longer carries a group is removed from it at their next login. Turn it off to only ever add. A token that carries no groups claim at all never revokes anything &mdash; that is a misconfigured provider, not an empty group list.
   .g-oidc-redirect-uri-container
     b Redirect URI to register with your provider:
     span.g-oidc-redirect-uri= redirectUri
