@@ -80,6 +80,28 @@ form.g-oidc-config-form(role="form")
         input.g-oidc-groups-authoritative(type="checkbox", checked=config.groupsAuthoritative)
         |  The provider owns membership of mirrored groups
     p.g-oidc-field-help On by default: a user whose token no longer carries a group is removed from it at their next login. Turn it off to only ever add. A token that carries no groups claim at all never revokes anything &mdash; that is a misconfigured provider, not an empty group list.
+  h4 Token exchange for resource servers (optional)
+  p.g-oidc-field-help Lets a service in front of Girder &mdash; an MCP server, typically &mdash; whose users sign in at the provider with their own client trade the access token it receives for a short-lived, <b>read-only</b> Girder token of the same account. Only identities already linked to a Girder account by a previous sign-in are accepted; nothing is created or modified.
+  .form-group
+    label.control-label(for="g-oidc-token-exchange-audience") Audience
+    input#g-oidc-token-exchange-audience.input-sm.form-control(type="text",
+        value=config.tokenExchangeAudience, placeholder="e.g. girder-mcp")
+    p.g-oidc-field-help Audience (<code>aud</code>) the access token must carry &mdash; with keycloak, add an audience mapper to the client scope the service requests. Must be dedicated to the service: not the client id above, nor <code>account</code>. Leave blank to disable the exchange.
+  .form-group
+    label.control-label(for="g-oidc-token-exchange-scope") Required scope
+    input#g-oidc-token-exchange-scope.input-sm.form-control(type="text",
+        value=config.tokenExchangeScope, placeholder="e.g. girder-mcp")
+    p.g-oidc-field-help OAuth scope the access token must grant. Required for the exchange to run.
+  .form-group
+    label.control-label(for="g-oidc-token-exchange-clients") Allowed clients
+    input#g-oidc-token-exchange-clients.input-sm.form-control(type="text",
+        value=config.tokenExchangeClients, placeholder="e.g. claude-code")
+    p.g-oidc-field-help Client ids of the provider (the token's <code>azp</code>) whose tokens may be exchanged, separated by spaces or commas. Required: without it, any application of the realm able to obtain the audience could reach Girder with its users' rights.
+  .form-group
+    label.control-label(for="g-oidc-token-exchange-minutes") Maximum token lifetime (minutes)
+    input#g-oidc-token-exchange-minutes.input-sm.form-control(type="number", min="1", max="1440",
+        value=config.tokenExchangeMinutes)
+    p.g-oidc-field-help An exchanged token never outlives the access token it came from either.
   .g-oidc-redirect-uri-container
     b Redirect URI to register with your provider:
     span.g-oidc-redirect-uri= redirectUri

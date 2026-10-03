@@ -216,3 +216,30 @@ def syncUserGroups(user, claims):
             logger.info('oidc: removed %s from the Girder group %r.',
                         user['login'], group['name'])
     return user
+
+
+def revokedMirroredGroups(user, claims):
+    """Mirrored groups ``user`` still belongs to that ``claims`` no longer confer.
+
+    Read-only counterpart of :func:`syncUserGroups`, for the token exchange: it
+    must not WRITE memberships from an access token, but it must not hand out a
+    token that reads collections the provider has taken away either. Returns:
+
+    * ``[]`` when there is nothing to object to (no groups claim configured,
+      sync not authoritative, or every mirrored membership still conferred);
+    * ``None`` when sync is authoritative but the claim is absent from the
+      token: membership cannot be checked, which the caller must refuse;
+    * otherwise the names of the revoked groups.
+    """
+    settings = Setting()
+    claimName = settings.get(PluginSettings.GROUPS_CLAIM)
+    if not claimName or not settings.get(PluginSettings.GROUPS_AUTHORITATIVE):
+        return []
+    values = _claimGroupValues(claims, claimName)
+    if values is None:
+        return None
+    mirrored = Group().find({
+        '_id': {'$in': list(user.get('groups', []))},
+        'oidc.provider': PROVIDER,
+    })
+    return [g['name'] for g in mirrored if (g.get('oidc') or {}).get('claim') not in values]

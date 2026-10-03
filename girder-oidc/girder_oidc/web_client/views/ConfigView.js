@@ -32,7 +32,11 @@ var ConfigView = View.extend({
                 adminClaimValue: this.$('#g-oidc-admin-claim-value').val().trim(),
                 groupsClaim: this.$('#g-oidc-groups-claim').val().trim(),
                 groupNamePrefix: this.$('#g-oidc-group-name-prefix').val(),
-                groupsAuthoritative: this.$('.g-oidc-groups-authoritative').is(':checked')
+                groupsAuthoritative: this.$('.g-oidc-groups-authoritative').is(':checked'),
+                tokenExchangeAudience: this.$('#g-oidc-token-exchange-audience').val().trim(),
+                tokenExchangeScope: this.$('#g-oidc-token-exchange-scope').val().trim(),
+                tokenExchangeClients: this.$('#g-oidc-token-exchange-clients').val().trim(),
+                tokenExchangeMinutes: parseInt(this.$('#g-oidc-token-exchange-minutes').val(), 10) || 60
             };
             // Only send the secret when the admin actually typed one.
             const secret = this.$('#g-oidc-client-secret').val();

@@ -41,6 +41,7 @@ identity onto Girder:
 | **Access restricted by claim** | Refuses login outright unless the ID token carries a configured claim, so one provider realm can serve several applications without every user of the realm getting an account here. |
 | **Admin mapping** | Derives the Girder site-admin flag from a claim, granted *and* revoked at each login (never demoting the last remaining admin). |
 | **Group synchronisation** | Mirrors the provider's groups into Girder groups, so provider-side group membership can grant access to collections and folders through Girder's ordinary access control lists. |
+| **Token exchange** | Lets a resource server in front of Girder (e.g. an MCP server) trade an access token issued for its audience for a short-lived, read-only Girder token of the already-linked account (`POST /oidc/token_exchange`). |
 | **Account lockdown** | Profile, password, 2FA and the "forgot my password" flow are refused server-side for OIDC-linked accounts: the provider owns them. |
 
 Claim names may use dots to descend into nested claims, e.g.

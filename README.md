@@ -33,6 +33,11 @@ self-contained development stack for building and debugging the plugin locally.
   into Girder groups, so provider-side membership grants access to collections
   through Girder's ordinary access control lists — with no per-user bookkeeping
   on the collection.
+- **Token exchange for resource servers**: a service in front of Girder (an
+  MCP server, typically) can trade an access token the provider issued *for it*
+  for a short-lived, read-only Girder token of the same, already-linked account
+  — so its users sign in through the provider instead of handling Girder API
+  keys.
 - **Admin configuration UI** with a "Test connection" button that probes the
   provider's discovery document and JWKS before you save.
 
@@ -281,6 +286,72 @@ whole route to site-admin-only when one does not. The guards in
 `account_guard.py` are decorated for that reason, and `plugin_tests/
 test_account_guard.py` pins the behaviour with a non-admin user.
 
+### Token exchange for resource servers
+
+`POST /api/v1/oidc/token_exchange` (form field `subjectToken`, **in the body**,
+never in the URL) turns a provider-issued **access token** into a Girder token
+with the `core.data.read` scope only. It is meant for a resource server placed
+in front of Girder whose users sign in at the provider with *their own* OAuth
+client: [girder-mcp](https://github.com/LIRYC-IHU/girder-mcp) uses it so that an
+MCP client such as Claude Code can log in through Keycloak (authorization code +
+PKCE) rather than with a Girder API key.
+
+It is off until three settings are filled in — **Audience**
+(`oidc.token_exchange_audience`), **Required scope**
+(`oidc.token_exchange_scope`) and **Allowed clients**
+(`oidc.token_exchange_clients`). An access token is accepted only when:
+
+- it is signed by a key of the provider's JWKS (asymmetric algorithms only), its
+  `iss` is the configured provider, it has not expired, and its `aud` contains
+  the configured audience — which must be dedicated to the service: neither
+  Girder's own client id (tokens issued for Girder's login can never be traded
+  in) nor an audience the provider adds by itself such as `account`;
+- it declares itself an access token, or nothing (`typ` = `Bearer`/`at+jwt`): ID,
+  refresh and logout tokens are refused whatever their audience;
+- it grants the required scope;
+- it was issued **to an allowed client** (`azp`, or `client_id` for RFC 9068
+  tokens). This is the gate that matters most: without it, any other
+  application of the realm able to obtain the audience — or a direct-grant
+  client that skips MFA — could trade its users' tokens for Girder access;
+- it satisfies the **required claim**, like an interactive login;
+- its `sub` is **already linked** to a Girder account by a previous single
+  sign-on. The exchange never creates, matches by email, or links an account;
+- that account can log in (not disabled, approved, email verified when
+  required), and — when admin mapping is on — a site admin's access token must
+  carry the admin claim, or the exchange is refused;
+- with authoritative group sync, the access token carries the groups claim and
+  still lists every mirrored group the user belongs to: someone removed from a
+  group at the provider is refused until an interactive login updates their
+  memberships.
+
+The resulting token lives at most `oidc.token_exchange_minutes` (60 by default)
+and never beyond the access token's own `exp`; the same access token presented
+again gets the same Girder token back. The exchange writes nothing on the user:
+the admin flag and mirrored groups are synchronised at interactive login only,
+because an access token may legitimately lack the claims an ID token carries.
+
+With keycloak, for a resource server reachable at `https://girder.example.org/mcp`:
+
+1. **Client scopes → Create** `girder-mcp` — type **None** (*Optional* or
+   *Default* would add it to every client created afterwards), *Include in token
+   scope* on — with a mapper **Audience** → *Included Custom Audience*
+   `girder-mcp`, *Add to access token* on.
+2. **Clients → Create** the client the users' tool will use, e.g. `claude-code`:
+   public client, *Standard flow* only, PKCE `S256`, redirect URI
+   `http://localhost:<port>/callback` (Claude Code: `--callback-port <port>`).
+   Add `girder-mcp` to *its* client scopes, as Optional — and to no other client.
+3. Keep anonymous dynamic client registration closed, or remove `girder-mcp`
+   from its *Allowed Client Scopes*.
+4. In Girder: **Token exchange → Audience** `girder-mcp`, **Required scope**
+   `girder-mcp`, **Allowed clients** `claude-code`.
+
+If an admin claim or group sync is configured, add their mappers to access
+tokens too, or the users concerned will be refused (see above) — the same mapper
+for both token types, so that group values have the same shape. An exchanged
+token is not revoked by a provider logout or a Girder account change; its
+lifetime (minutes) is the window. The endpoint is anonymous: rate-limit it at the
+reverse proxy.
+
 ### Transport
 
 The browser-facing **Provider URL** must be `https` (plain `http` is accepted
@@ -384,8 +455,8 @@ Cutting a release is therefore:
 
 ```bash
 # bump `version` in girder-oidc/pyproject.toml first, then:
-git tag -a v0.5.0 -m 'v0.5.0'
-git push origin v0.5.0
+git tag -a v0.6.0 -m 'v0.6.0'
+git push origin v0.6.0
 ```
 
 Both build jobs assert that the wheel actually contains

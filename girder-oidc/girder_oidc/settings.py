@@ -1,4 +1,5 @@
 import os
+import re
 from urllib.parse import urlparse
 
 from girder.exceptions import ValidationException
@@ -60,6 +61,25 @@ class PluginSettings:
     # from it at the next login. Groups the plugin did not create are never
     # touched either way.
     GROUPS_AUTHORITATIVE = 'oidc.groups_authoritative'
+    # Token exchange for resource servers (e.g. an MCP server): an access token
+    # the provider issued to ANOTHER client, for this audience, is traded for a
+    # short-lived read-only Girder token of the linked account. Blank disables
+    # the endpoint. Must differ from the client id, so that tokens issued for
+    # Girder's own login can never be replayed through it.
+    TOKEN_EXCHANGE_AUDIENCE = 'oidc.token_exchange_audience'
+    # OAuth scope the access token must grant (`scope`/`scp` claim). Required
+    # for the exchange to run: the audience alone is not a narrow enough gate.
+    TOKEN_EXCHANGE_SCOPE = 'oidc.token_exchange_scope'
+    # Upper bound on the lifetime of an exchanged Girder token, in minutes; it
+    # never outlives the access token it was exchanged for either.
+    TOKEN_EXCHANGE_MINUTES = 'oidc.token_exchange_minutes'
+    # Client ids (the token's `azp`) allowed to exchange, space- or
+    # comma-separated. Required: otherwise any client of the realm that can
+    # obtain the audience -- another application, a direct-grant client that
+    # skips MFA -- could trade its users' tokens for Girder access.
+    TOKEN_EXCHANGE_CLIENTS = 'oidc.token_exchange_clients'
+
+    TOKEN_EXCHANGE_MAX_MINUTES = 1440
 
 
 @setting_utilities.default(PluginSettings.ENABLED)
@@ -147,6 +167,26 @@ def _defaultGroupsAuthoritative():
     return True
 
 
+@setting_utilities.default(PluginSettings.TOKEN_EXCHANGE_AUDIENCE)
+def _defaultTokenExchangeAudience():
+    return ''
+
+
+@setting_utilities.default(PluginSettings.TOKEN_EXCHANGE_SCOPE)
+def _defaultTokenExchangeScope():
+    return ''
+
+
+@setting_utilities.default(PluginSettings.TOKEN_EXCHANGE_CLIENTS)
+def _defaultTokenExchangeClients():
+    return ''
+
+
+@setting_utilities.default(PluginSettings.TOKEN_EXCHANGE_MINUTES)
+def _defaultTokenExchangeMinutes():
+    return 60
+
+
 @setting_utilities.validator({
     PluginSettings.CLIENT_ID,
     PluginSettings.CLIENT_SECRET,
@@ -207,3 +247,66 @@ def _validatePublicUrl(doc):
 @setting_utilities.validator(PluginSettings.INTERNAL_URL)
 def _validateInternalUrl(doc):
     _parseProviderUrl(doc)
+
+
+@setting_utilities.validator({
+    PluginSettings.TOKEN_EXCHANGE_AUDIENCE,
+    PluginSettings.TOKEN_EXCHANGE_SCOPE,
+})
+def _validateTokenExchangeNames(doc):
+    """A single audience / scope name: no whitespace, so a value can never be
+    read as a list of several (which would widen what is accepted)."""
+    value = doc['value']
+    if not isinstance(value, str):
+        raise ValidationException('Value must be a string.', 'value')
+    value = value.strip()
+    if any(c.isspace() for c in value):
+        raise ValidationException('Value must be a single name, without spaces.', 'value')
+    if doc['key'] == PluginSettings.TOKEN_EXCHANGE_AUDIENCE and value:
+        # Imported here: girder.models.setting imports this module's validators.
+        from girder.models.setting import Setting
+        if value == (Setting().get(PluginSettings.CLIENT_ID) or '').strip():
+            raise ValidationException(
+                'The token-exchange audience must differ from the client id: '
+                "tokens issued for Girder's own login must not be exchangeable.",
+                'value')
+        if value in RESERVED_AUDIENCES:
+            raise ValidationException(
+                'The token-exchange audience must be dedicated to the service: '
+                '"%s" is put in tokens by the provider itself.' % value, 'value')
+    doc['value'] = value
+
+
+# Audiences keycloak adds on its own (e.g. `account` to almost every access
+# token): accepting one would make every token of the realm exchangeable.
+RESERVED_AUDIENCES = frozenset({
+    'account', 'realm-management', 'broker', 'security-admin-console',
+    'admin-cli', 'admin-console',
+})
+
+
+def parseClientList(value):
+    """`"a, b c"` → `["a", "b", "c"]` (order kept, duplicates dropped)."""
+    out = []
+    for name in re.split(r'[\s,]+', value or ''):
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+@setting_utilities.validator(PluginSettings.TOKEN_EXCHANGE_CLIENTS)
+def _validateTokenExchangeClients(doc):
+    value = doc['value']
+    if not isinstance(value, str):
+        raise ValidationException('Value must be a string.', 'value')
+    doc['value'] = ' '.join(parseClientList(value))
+
+
+@setting_utilities.validator(PluginSettings.TOKEN_EXCHANGE_MINUTES)
+def _validateTokenExchangeMinutes(doc):
+    value = doc['value']
+    if isinstance(value, bool) or not isinstance(value, int) \
+            or not 1 <= value <= PluginSettings.TOKEN_EXCHANGE_MAX_MINUTES:
+        raise ValidationException(
+            'Value must be an integer between 1 and %d.'
+            % PluginSettings.TOKEN_EXCHANGE_MAX_MINUTES, 'value')

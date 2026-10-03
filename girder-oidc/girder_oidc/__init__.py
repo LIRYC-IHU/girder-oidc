@@ -4,6 +4,7 @@ from girder import events
 from girder.constants import AccessType, SortDir
 from girder.exceptions import ValidationException
 from girder.models.group import Group
+from girder.models.token import Token
 from girder.models.user import User
 from girder.plugin import GirderPlugin, registerPluginStaticContent
 
@@ -39,6 +40,9 @@ class OidcPlugin(GirderPlugin):
         Group().ensureIndex((
             (('oidc.provider', SortDir.ASCENDING),
              ('oidc.claim', SortDir.ASCENDING)), {}))
+
+        # Exchanged tokens are looked up by the digest of their access token.
+        Token().ensureIndex(('oidcExchange', {'sparse': True}))
 
         events.bind('no_password_login_attempt', 'oidc', checkOidcUser)
 

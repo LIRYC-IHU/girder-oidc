@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+import threading
 import time
 from urllib.parse import urlencode, urlparse
 
@@ -15,6 +16,11 @@ from girder.models.setting import Setting
 from .settings import PluginSettings
 
 _DISCOVERY_TTL = 300  # seconds; cache OIDC discovery + JWKS this long
+# After a failed discovery/JWKS fetch, fail fast for this long instead of
+# re-fetching: every anonymous request that needs the provider (login, token
+# exchange) would otherwise hold a server thread for the full HTTP timeout
+# while the provider is down -- an easy way to exhaust the thread pool.
+_FAILURE_TTL = 30
 _HTTP_TIMEOUT = 10
 
 # Asymmetric signature algorithms only. The provider signs with a key from its
@@ -29,6 +35,29 @@ _ID_TOKEN_ALGORITHMS = [
     'EdDSA',
 ]
 _jwt = JsonWebToken(_ID_TOKEN_ALGORITHMS)
+
+# An access token is a bearer credential: bound its size before any parsing.
+_MAX_ACCESS_TOKEN_LENGTH = 16 * 1024
+# Values that mark a JWT as an ACCESS token. Keycloak puts `typ` in the payload
+# ("Bearer"; its ID tokens say "ID", refresh tokens "Refresh"/"Offline");
+# RFC 9068 puts it in the header ("at+jwt"). A token that declares any other
+# type is refused, so an ID token that happens to carry the audience can never
+# be traded in.
+_ACCESS_TOKEN_TYPES = frozenset({'bearer', 'at+jwt', 'application/at+jwt'})
+_HEADER_TYPES = frozenset({'jwt', 'at+jwt', 'application/at+jwt'})
+
+
+def tokenScopes(claims):
+    """OAuth scopes granted by an access token: the space-separated `scope`
+    claim (RFC 9068, Keycloak), or `scp` as a list or string (Entra ID, Okta)."""
+    scopes = set()
+    for name in ('scope', 'scp'):
+        value = claims.get(name)
+        if isinstance(value, str):
+            scopes.update(value.split())
+        elif isinstance(value, (list, tuple)):
+            scopes.update(str(v) for v in value)
+    return scopes
 
 
 def generate_pkce_pair():
@@ -122,6 +151,8 @@ class OidcClient:
     """
 
     _cache = {}  # shared across instances: {publicUrl: (expiry, discovery, jwks)}
+    _failures = {}  # {publicUrl: (until, message)} -- recent fetch failures
+    _loadLock = threading.Lock()  # one provider fetch at a time
 
     def __init__(self):
         settings = Setting()
@@ -167,19 +198,57 @@ class OidcClient:
     def _fetchJson(self, url, **kwargs):
         return _httpGetJson(url, **kwargs)
 
-    def _load(self):
-        """Return (discovery, jwks), using the per-issuer cache when fresh."""
+    def _fresh(self):
         cached = self._cache.get(self.publicUrl)
         if cached and cached[0] > time.time():
             return cached[1], cached[2]
+        failed = self._failures.get(self.publicUrl)
+        if failed and failed[0] > time.time():
+            if cached:  # recent failure, but last known keys still usable
+                return cached[1], cached[2]
+            raise RestException(failed[1], code=502)
+        return None
 
-        discoveryUrl = self._toInternal(
-            f'{self.publicUrl}/.well-known/openid-configuration')
-        discovery = self._fetchJson(discoveryUrl)
-        jwks = self._fetchJson(self._providerEndpoint(discovery, 'jwks_uri'))
+    def _load(self):
+        """Return (discovery, jwks), using the per-issuer cache when fresh.
 
-        self._cache[self.publicUrl] = (time.time() + _DISCOVERY_TTL, discovery, jwks)
-        return discovery, jwks
+        Fetches are serialised, and a failure is remembered for _FAILURE_TTL
+        seconds, so a slow or unreachable provider costs one timeout, not one
+        per request.
+        """
+        fresh = self._fresh()
+        if fresh:
+            return fresh
+        stale = self._cache.get(self.publicUrl)
+        # Never queue behind a fetch in progress: while the provider is slow, that
+        # would pile up server threads exactly as the failure cache is meant to
+        # prevent. Serve the previous document (keys rotate rarely) or refuse.
+        if not self._loadLock.acquire(blocking=False):
+            if stale:
+                return stale[1], stale[2]
+            raise RestException('The OIDC provider is being contacted; retry shortly.',
+                                code=503)
+        try:
+            fresh = self._fresh()  # another thread may have just fetched
+            if fresh:
+                return fresh
+            try:
+                discoveryUrl = self._toInternal(
+                    f'{self.publicUrl}/.well-known/openid-configuration')
+                discovery = self._fetchJson(discoveryUrl)
+                jwks = self._fetchJson(self._providerEndpoint(discovery, 'jwks_uri'))
+            except RestException as e:
+                self._failures[self.publicUrl] = (time.time() + _FAILURE_TTL, str(e))
+                if stale:
+                    # Stale-while-revalidate: a provider hiccup must not break
+                    # logins that the last known keys can still verify.
+                    return stale[1], stale[2]
+                raise
+            self._failures.pop(self.publicUrl, None)
+            self._cache[self.publicUrl] = (time.time() + _DISCOVERY_TTL, discovery, jwks)
+            return discovery, jwks
+        finally:
+            self._loadLock.release()
 
     @property
     def discovery(self):
@@ -263,5 +332,63 @@ class OidcClient:
             raise RestException(
                 'OIDC ID token has multiple audiences and is not authorized '
                 'for this client.', code=403)
+
+        return claims
+
+    def validateAccessToken(self, accessToken, audience, requiredScope=''):
+        """
+        Verify an ACCESS token the provider issued for ``audience`` and return
+        its claims.
+
+        Used by the token exchange (``POST /oidc/token_exchange``): a resource
+        server such as an MCP server receives the token from its own OAuth
+        client and trades it for a Girder token. Checks the signature against
+        the provider JWKS (asymmetric algorithms only), ``iss``, ``aud``
+        (must contain ``audience``), ``sub``, ``exp``/``nbf``, that the token
+        does not declare itself as anything but an access token, and, when
+        ``requiredScope`` is set, that it grants that scope.
+
+        Every failure raises a 401 ``RestException``.
+        """
+        if not audience:
+            raise RestException('Token exchange is not configured.', code=403)
+        if not isinstance(accessToken, str) or not accessToken \
+                or len(accessToken) > _MAX_ACCESS_TOKEN_LENGTH \
+                or accessToken.count('.') != 2:
+            raise RestException('Invalid access token.', code=401)
+
+        discovery, jwks = self._load()
+        claimsOptions = {
+            'iss': {'essential': True, 'value': discovery['issuer']},
+            'aud': {'essential': True, 'value': audience},
+            'sub': {'essential': True},
+            'exp': {'essential': True},
+        }
+        try:
+            claims = _jwt.decode(accessToken, jwks, claims_options=claimsOptions)
+            claims.validate(leeway=30)
+        except (JoseError, ValueError, TypeError) as e:
+            raise RestException(f'Invalid access token: {e}', code=401)
+
+        # `sub` keys the account lookup; refuse anything but a non-empty string
+        # rather than letting an exotic value reach the database query.
+        if not isinstance(claims.get('sub'), str) or not claims['sub']:
+            raise RestException('Invalid access token: bad "sub".', code=401)
+
+        payloadType = claims.get('typ')
+        if payloadType is not None \
+                and str(payloadType).lower() not in _ACCESS_TOKEN_TYPES:
+            raise RestException(
+                'Invalid access token: this is not an access token (typ=%s).'
+                % payloadType, code=401)
+        headerType = (claims.header or {}).get('typ')
+        if headerType is not None and str(headerType).lower() not in _HEADER_TYPES:
+            raise RestException(
+                'Invalid access token: unexpected token type in header.', code=401)
+
+        if requiredScope and requiredScope not in tokenScopes(claims):
+            raise RestException(
+                'Access token does not grant the "%s" scope.' % requiredScope,
+                code=401)
 
         return claims

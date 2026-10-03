@@ -7,7 +7,7 @@ import cherrypy
 
 from girder.api import access
 from girder.api.describe import Description, autoDescribeRoute
-from girder.api.rest import Resource, getApiUrl
+from girder.api.rest import Resource, disableAuditLog, getApiUrl
 from girder.exceptions import RestException
 from girder.models.setting import Setting
 from girder.models.token import Token
@@ -16,6 +16,7 @@ from girder.models.user import User
 from .client import OidcClient, generate_nonce, generate_pkce_pair, probeProvider
 from .groups import syncUserGroups
 from .settings import PluginSettings
+from .token_exchange import exchangeAccessToken
 from .user import (claimAssertsVerifiedEmail, claimGrantsAccess, claimGrantsAdmin,
                    createOrReuseUser)
 
@@ -72,6 +73,7 @@ class Oidc(Resource):
         self.route('GET', ('login',), self.login)
         self.route('GET', ('callback',), self.callback)
         self.route('POST', ('exchange',), self.exchange)
+        self.route('POST', ('token_exchange',), self.tokenExchange)
 
     def _redirectUri(self):
         return '/'.join((getApiUrl(), 'oidc', 'callback'))
@@ -139,6 +141,12 @@ class Oidc(Resource):
             'groupNamePrefix': settings.get(PluginSettings.GROUP_NAME_PREFIX),
             'groupsAuthoritative': settings.get(
                 PluginSettings.GROUPS_AUTHORITATIVE),
+            'tokenExchangeAudience': settings.get(
+                PluginSettings.TOKEN_EXCHANGE_AUDIENCE),
+            'tokenExchangeScope': settings.get(PluginSettings.TOKEN_EXCHANGE_SCOPE),
+            'tokenExchangeClients': settings.get(PluginSettings.TOKEN_EXCHANGE_CLIENTS),
+            'tokenExchangeMinutes': settings.get(
+                PluginSettings.TOKEN_EXCHANGE_MINUTES),
         }
 
     @access.admin
@@ -179,13 +187,25 @@ class Oidc(Resource):
         .param('groupsAuthoritative', 'Remove a user from a mirrored group when '
                'their token no longer carries it.', dataType='boolean',
                required=False)
+        .param('tokenExchangeAudience', 'Audience an access token must carry to '
+               'be exchanged for a read-only Girder token (blank disables the '
+               'exchange; must differ from the client id).', required=False)
+        .param('tokenExchangeScope', 'OAuth scope the exchanged access token '
+               'must grant (required for the exchange to run).', required=False)
+        .param('tokenExchangeClients', 'Client ids (azp) allowed to exchange, '
+               'space- or comma-separated (required for the exchange to run).',
+               required=False)
+        .param('tokenExchangeMinutes', 'Maximum lifetime of an exchanged token, '
+               'in minutes.', dataType='integer', required=False)
     )
     def setConfiguration(self, enabled, clientId, clientSecret, publicUrl,
                          internalUrl, scopes, buttonLabel, autoCreateUsers,
                          ignoreRegistrationPolicy, trustUnverifiedEmail,
                          requiredClaim, requiredClaimValue,
                          adminClaim, adminClaimValue, groupsClaim,
-                         groupNamePrefix, groupsAuthoritative):
+                         groupNamePrefix, groupsAuthoritative,
+                         tokenExchangeAudience, tokenExchangeScope,
+                         tokenExchangeClients, tokenExchangeMinutes):
         settings = Setting()
         if enabled is not None:
             settings.set(PluginSettings.ENABLED, enabled)
@@ -224,6 +244,14 @@ class Oidc(Resource):
             settings.set(PluginSettings.GROUP_NAME_PREFIX, groupNamePrefix)
         if groupsAuthoritative is not None:
             settings.set(PluginSettings.GROUPS_AUTHORITATIVE, groupsAuthoritative)
+        if tokenExchangeAudience is not None:
+            settings.set(PluginSettings.TOKEN_EXCHANGE_AUDIENCE, tokenExchangeAudience)
+        if tokenExchangeScope is not None:
+            settings.set(PluginSettings.TOKEN_EXCHANGE_SCOPE, tokenExchangeScope)
+        if tokenExchangeClients is not None:
+            settings.set(PluginSettings.TOKEN_EXCHANGE_CLIENTS, tokenExchangeClients)
+        if tokenExchangeMinutes is not None:
+            settings.set(PluginSettings.TOKEN_EXCHANGE_MINUTES, tokenExchangeMinutes)
         return self.getConfiguration()
 
     @access.admin
@@ -417,6 +445,7 @@ class Oidc(Resource):
             _appendQuery(redirect, 'girderOidcCode', str(handoff['_id'])))
 
     @access.public
+    @disableAuditLog  # the code is a bearer credential: keep it out of the audit log
     @autoDescribeRoute(
         Description('Redeem a one-time OIDC handoff code for a session token.')
         .notes('The code is issued by the login redirect, is valid for %d '
@@ -432,3 +461,34 @@ class Oidc(Resource):
         if handoff['expires'] < datetime.datetime.now(datetime.timezone.utc):
             raise RestException('Expired OIDC handoff code.', code=403)
         return {'token': handoff['oidcHandoff']}
+
+    @access.public
+    @disableAuditLog  # `subjectToken` is a bearer credential: keep it out of the audit log
+    @autoDescribeRoute(
+        Description('Exchange an access token issued by the identity provider for '
+                    'a short-lived, read-only Girder token.')
+        .notes('For resource servers placed in front of Girder (e.g. an MCP '
+               'server). The access token must be issued for the audience set in '
+               '`oidc.token_exchange_audience`, grant `oidc.token_exchange_scope`, '
+               'be issued to a client listed in `oidc.token_exchange_clients`, and '
+               'its `sub` must already be linked to a Girder account by a previous '
+               'single sign-on login. '
+               'The result has the `core.data.read` scope only. Send the token in '
+               'the request BODY (form field), never in the URL.')
+        .param('subjectToken', 'The access token.', paramType='formData')
+        .errorResponse('Invalid access token.', 401)
+        .errorResponse('Exchange disabled, or identity not admitted.', 403)
+    )
+    def tokenExchange(self, subjectToken):
+        # A bearer credential in the query string ends up in access logs and
+        # proxies; refuse it there even though cherrypy would merge it in.
+        if 'subjectToken' in parse_qs(cherrypy.request.query_string or ''):
+            raise RestException(
+                'subjectToken must be sent in the request body, not in the URL.',
+                code=400)
+        token = exchangeAccessToken(subjectToken)
+        return {
+            'token': token['_id'],
+            'expires': token['expires'],
+            'scope': token['scope'],
+        }
