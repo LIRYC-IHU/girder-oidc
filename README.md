@@ -296,6 +296,15 @@ client: [girder-mcp](https://github.com/LIRYC-IHU/girder-mcp) uses it so that an
 MCP client such as Claude Code can log in through Keycloak (authorization code +
 PKCE) rather than with a Girder API key.
 
+It is **reserved to the resource server**: the caller must present, in the
+`X-Token-Exchange-Secret` header, the secret set in Girder's
+`OIDC_TOKEN_EXCHANGE_SECRET` environment variable (16 characters or more;
+environment only, never stored in the database). It is checked before anything
+else, so a client that holds an access token cannot obtain a Girder token by
+itself and query Girder around the resource server (and its audit trail). The
+resource server should also reach Girder over an internal network, and the
+reverse proxy can refuse the route publicly.
+
 It is off until three settings are filled in — **Audience**
 (`oidc.token_exchange_audience`), **Required scope**
 (`oidc.token_exchange_scope`) and **Allowed clients**
@@ -343,7 +352,8 @@ With keycloak, for a resource server reachable at `https://girder.example.org/mc
 3. Keep anonymous dynamic client registration closed, or remove `girder-mcp`
    from its *Allowed Client Scopes*.
 4. In Girder: **Token exchange → Audience** `girder-mcp`, **Required scope**
-   `girder-mcp`, **Allowed clients** `claude-code`.
+   `girder-mcp`, **Allowed clients** `claude-code`; and in Girder's environment,
+   `OIDC_TOKEN_EXCHANGE_SECRET`, shared with the resource server.
 
 If an admin claim or group sync is configured, add their mappers to access
 tokens too, or the users concerned will be refused (see above) — the same mapper
@@ -455,8 +465,8 @@ Cutting a release is therefore:
 
 ```bash
 # bump `version` in girder-oidc/pyproject.toml first, then:
-git tag -a v0.6.0 -m 'v0.6.0'
-git push origin v0.6.0
+git tag -a v0.7.0 -m 'v0.7.0'
+git push origin v0.7.0
 ```
 
 Both build jobs assert that the wheel actually contains

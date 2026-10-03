@@ -46,6 +46,15 @@ def provider(rsaKey, monkeypatch):
     monkeypatch.setattr(OidcClient, '_load', lambda self: (discovery, jwks))
 
 
+EXCHANGE_SECRET = 'mcp-server-exchange-secret'
+
+
+@pytest.fixture(autouse=True)
+def callerSecret(monkeypatch):
+    """The resource server's secret, configured in Girder's environment."""
+    monkeypatch.setenv('OIDC_TOKEN_EXCHANGE_SECRET', EXCHANGE_SECRET)
+
+
 @pytest.fixture
 def configured(db, provider):
     settings = Setting()
@@ -74,10 +83,12 @@ def _mint(rsaKey, **overrides):
     return jwt.encode({'alg': 'RS256', 'kid': 'k1', 'typ': 'JWT'}, payload, rsaKey).decode()
 
 
-def _exchange(server, token, **kwargs):
+def _exchange(server, token, secret=EXCHANGE_SECRET, **kwargs):
+    headers = [('X-Token-Exchange-Secret', secret)] if secret is not None else []
     return server.request(path='/oidc/token_exchange', method='POST',
                           body='subjectToken=' + token,
-                          type='application/x-www-form-urlencoded', **kwargs)
+                          type='application/x-www-form-urlencoded',
+                          additionalHeaders=headers, **kwargs)
 
 
 # --- The happy path, and what comes out of it ----------------------------------------------
@@ -554,3 +565,88 @@ def test_settings_forced_by_environment_are_type_checked(server, configured, lin
         for k in (PluginSettings.TOKEN_EXCHANGE_CLIENTS, PluginSettings.TOKEN_EXCHANGE_AUDIENCE,
                   PluginSettings.TOKEN_EXCHANGE_SCOPE, PluginSettings.TOKEN_EXCHANGE_MINUTES):
             Setting()._get.invalidate(k)
+
+
+
+# --- Reserved to the resource server -----------------------------------------------------
+
+@pytest.mark.plugin('oidc')
+@pytest.mark.parametrize('presented', [None, '', 'wrong', EXCHANGE_SECRET + 'x',
+                                       EXCHANGE_SECRET[:-1], 'é' * 30])
+def test_only_the_resource_server_may_exchange(server, configured, linked, rsaKey,
+                                               monkeypatch, presented):
+    """A client that holds a valid access token must not get a Girder token itself
+    (it would then query Girder around the MCP server and its audit journal)."""
+    loads = []
+    original = OidcClient._load
+    monkeypatch.setattr(OidcClient, '_load', lambda self: loads.append(1) or original(self))
+    resp = _exchange(server, _mint(rsaKey), secret=presented)
+    assertStatus(resp, 403)
+    assert 'reserved to the resource server' in resp.json['message']
+    # Refused before anything about the token is looked at: no JWKS, no token.
+    assert loads == []
+    assert Token().collection.count_documents({'oidcExchange': {'$exists': True}}) == 0
+
+
+@pytest.mark.plugin('oidc')
+@pytest.mark.parametrize('configuredSecret', [
+    None, '', 'short-secret', ' padded-secret-0123456789 ', 'non-ascii-sécret-0123456789',
+    'with\ttab-0123456789abcdef',
+])
+def test_exchange_refused_while_the_secret_is_not_usable(
+        server, configured, linked, rsaKey, monkeypatch, caplog, configuredSecret):
+    if configuredSecret is None:
+        monkeypatch.delenv('OIDC_TOKEN_EXCHANGE_SECRET', raising=False)
+    else:
+        monkeypatch.setenv('OIDC_TOKEN_EXCHANGE_SECRET', configuredSecret)
+    with caplog.at_level(logging.ERROR, logger='girder_oidc.token_exchange'):
+        # Even a caller presenting the same (weak or unusable) value is refused...
+        resp = _exchange(server, _mint(rsaKey), secret=(configuredSecret or '').strip())
+    assertStatus(resp, 403)
+    # ...with the same answer as a wrong secret: the reason is for the server log only.
+    assert resp.json['message'] == 'Token exchange is reserved to the resource server.'
+    assert 'OIDC_TOKEN_EXCHANGE_SECRET' in caplog.text
+
+
+@pytest.mark.plugin('oidc')
+def test_secret_is_checked_before_the_exchange_settings(server, db, linked, rsaKey):
+    """Exchange settings empty: a caller without the secret still learns nothing
+    more than "reserved" (no "misconfigured" detail)."""
+    Setting().set(PluginSettings.ENABLED, True)
+    resp = _exchange(server, _mint(rsaKey), secret='wrong')
+    assertStatus(resp, 403)
+    assert resp.json['message'] == 'Token exchange is reserved to the resource server.'
+
+
+@pytest.mark.plugin('oidc')
+def test_secret_never_appears_in_logs_or_responses(server, configured, linked, rsaKey, caplog):
+    with caplog.at_level(logging.DEBUG):
+        ok = _exchange(server, _mint(rsaKey))
+        bad = _exchange(server, _mint(rsaKey), secret=EXCHANGE_SECRET[:-1] + 'X')
+    assertStatusOk(ok)
+    assertStatus(bad, 403)
+    for text in (caplog.text, str(ok.json), str(bad.json)):
+        assert EXCHANGE_SECRET not in text and EXCHANGE_SECRET[:-1] not in text
+    assert 'wrong caller secret' in caplog.text
+
+
+@pytest.mark.plugin('oidc')
+def test_route_variants_are_covered_by_the_secret(server, configured, linked, rsaKey):
+    """Girder routes `token_exchange/` like `token_exchange`: whatever a proxy rule
+    misses, the application check still applies."""
+    resp = server.request(path='/oidc/token_exchange/', method='POST',
+                          body='subjectToken=' + _mint(rsaKey),
+                          type='application/x-www-form-urlencoded')
+    assertStatus(resp, 403)
+
+
+@pytest.mark.plugin('oidc')
+def test_configuration_reports_the_secret_without_revealing_it(server, configured, admin,
+                                                               monkeypatch):
+    resp = server.request(path='/oidc/configuration', user=admin)
+    assertStatusOk(resp)
+    assert resp.json['tokenExchangeSecretSet'] is True
+    assert EXCHANGE_SECRET not in str(resp.json)
+    monkeypatch.delenv('OIDC_TOKEN_EXCHANGE_SECRET')
+    assert server.request(path='/oidc/configuration', user=admin).json[
+        'tokenExchangeSecretSet'] is False

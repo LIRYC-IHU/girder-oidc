@@ -82,6 +82,10 @@ form.g-oidc-config-form(role="form")
     p.g-oidc-field-help On by default: a user whose token no longer carries a group is removed from it at their next login. Turn it off to only ever add. A token that carries no groups claim at all never revokes anything &mdash; that is a misconfigured provider, not an empty group list.
   h4 Token exchange for resource servers (optional)
   p.g-oidc-field-help Lets a service in front of Girder &mdash; an MCP server, typically &mdash; whose users sign in at the provider with their own client trade the access token it receives for a short-lived, <b>read-only</b> Girder token of the same account. Only identities already linked to a Girder account by a previous sign-in are accepted; nothing is created or modified.
+  if config.tokenExchangeSecretSet
+    p.g-oidc-field-help Caller secret: <b>configured</b> (<code>OIDC_TOKEN_EXCHANGE_SECRET</code>). Only the resource server holding it can exchange tokens.
+  else
+    p.g-oidc-field-help.g-oidc-warning Caller secret: <b>not configured</b>. Set <code>OIDC_TOKEN_EXCHANGE_SECRET</code> (16 characters or more) in Girder's environment and give the same value to the resource server; until then every exchange is refused.
   .form-group
     label.control-label(for="g-oidc-token-exchange-audience") Audience
     input#g-oidc-token-exchange-audience.input-sm.form-control(type="text",

@@ -16,7 +16,7 @@ from girder.models.user import User
 from .client import OidcClient, generate_nonce, generate_pkce_pair, probeProvider
 from .groups import syncUserGroups
 from .settings import PluginSettings
-from .token_exchange import exchangeAccessToken
+from .token_exchange import SECRET_HEADER, exchangeAccessToken, secretConfigured
 from .user import (claimAssertsVerifiedEmail, claimGrantsAccess, claimGrantsAdmin,
                    createOrReuseUser)
 
@@ -147,6 +147,8 @@ class Oidc(Resource):
             'tokenExchangeClients': settings.get(PluginSettings.TOKEN_EXCHANGE_CLIENTS),
             'tokenExchangeMinutes': settings.get(
                 PluginSettings.TOKEN_EXCHANGE_MINUTES),
+            # Whether the caller secret is configured; never its value.
+            'tokenExchangeSecretSet': secretConfigured(),
         }
 
     @access.admin
@@ -474,7 +476,10 @@ class Oidc(Resource):
                'its `sub` must already be linked to a Girder account by a previous '
                'single sign-on login. '
                'The result has the `core.data.read` scope only. Send the token in '
-               'the request BODY (form field), never in the URL.')
+               'the request BODY (form field), never in the URL. Reserved to the '
+               'resource server: the `X-Token-Exchange-Secret` header must carry the '
+               'secret set in Girder\'s `OIDC_TOKEN_EXCHANGE_SECRET` environment '
+               'variable.')
         .param('subjectToken', 'The access token.', paramType='formData')
         .errorResponse('Invalid access token.', 401)
         .errorResponse('Exchange disabled, or identity not admitted.', 403)
@@ -486,7 +491,8 @@ class Oidc(Resource):
             raise RestException(
                 'subjectToken must be sent in the request body, not in the URL.',
                 code=400)
-        token = exchangeAccessToken(subjectToken)
+        token = exchangeAccessToken(
+            subjectToken, cherrypy.request.headers.get(SECRET_HEADER))
         return {
             'token': token['_id'],
             'expires': token['expires'],
