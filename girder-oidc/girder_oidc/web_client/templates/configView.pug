@@ -31,6 +31,12 @@ form.g-oidc-config-form(role="form")
   .form-group
     .checkbox
       label
+        input.g-oidc-propagate-logout(type="checkbox", checked=config.propagateLogout)
+        |  Sign out of the identity provider too
+    p.g-oidc-field-help On by default. Clicking "Log out" in Girder also ends the provider session, which signs the user out of every other application sharing it. Needs the post-logout redirect URI below registered with your provider. Turn it off to keep logout local to Girder.
+  .form-group
+    .checkbox
+      label
         input.g-oidc-auto-create(type="checkbox", checked=config.autoCreateUsers)
         |  Automatically create Girder accounts for new identities
   .form-group
@@ -109,6 +115,9 @@ form.g-oidc-config-form(role="form")
   .g-oidc-redirect-uri-container
     b Redirect URI to register with your provider:
     span.g-oidc-redirect-uri= redirectUri
+  .g-oidc-redirect-uri-container
+    b Post-logout redirect URI to register:
+    span.g-oidc-redirect-uri= postLogoutRedirectUri
   p.g-validation-failed-message#g-oidc-error-message
   .g-oidc-actions
     input.btn.btn-sm.btn-primary.g-oidc-save(type="submit", value="Save")

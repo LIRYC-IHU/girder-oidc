@@ -437,7 +437,7 @@ def _mirroredGroup(name, claimValue, creator):
 
 @pytest.mark.plugin('oidc')
 def test_revoked_mirrored_group_refuses_the_exchange(server, configured, linked, admin,
-                                                      rsaKey):
+                                                     rsaKey):
     """Removed from a group at the provider, still in its Girder mirror (sync only
     happens at login): the exchange must not hand out a token reaching its data."""
     Setting().set(PluginSettings.GROUPS_CLAIM, 'groups')
@@ -514,7 +514,7 @@ def test_unknown_signing_key_is_refused(server, configured, linked):
 
 @pytest.mark.plugin('oidc')
 def test_unreachable_provider_is_a_502_and_mints_nothing(server, db, linked, rsaKey,
-                                                          monkeypatch):
+                                                         monkeypatch):
     from girder_oidc import client as oidcClient
     settings = Setting()
     settings.set(PluginSettings.ENABLED, True)
@@ -551,7 +551,7 @@ def test_unreachable_provider_is_a_502_and_mints_nothing(server, db, linked, rsa
     ('GIRDER_SETTING_OIDC_TOKEN_EXCHANGE_MINUTES', '100000'),
 ])
 def test_settings_forced_by_environment_are_type_checked(server, configured, linked, rsaKey,
-                                                          monkeypatch, key, raw):
+                                                         monkeypatch, key, raw):
     """GIRDER_SETTING_* values skip the validators: a wrong type must refuse (403),
     never crash (500) nor widen what is accepted."""
     monkeypatch.setenv(key, raw)
@@ -565,7 +565,6 @@ def test_settings_forced_by_environment_are_type_checked(server, configured, lin
         for k in (PluginSettings.TOKEN_EXCHANGE_CLIENTS, PluginSettings.TOKEN_EXCHANGE_AUDIENCE,
                   PluginSettings.TOKEN_EXCHANGE_SCOPE, PluginSettings.TOKEN_EXCHANGE_MINUTES):
             Setting()._get.invalidate(k)
-
 
 
 # --- Reserved to the resource server -----------------------------------------------------

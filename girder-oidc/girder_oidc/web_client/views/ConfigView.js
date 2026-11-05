@@ -23,6 +23,7 @@ var ConfigView = View.extend({
                 internalUrl: this.$('#g-oidc-internal-url').val().trim(),
                 scopes: this.$('#g-oidc-scopes').val().trim(),
                 buttonLabel: this.$('#g-oidc-button-label').val().trim(),
+                propagateLogout: this.$('.g-oidc-propagate-logout').is(':checked'),
                 autoCreateUsers: this.$('.g-oidc-auto-create').is(':checked'),
                 ignoreRegistrationPolicy: this.$('.g-oidc-ignore-registration').is(':checked'),
                 trustUnverifiedEmail: this.$('.g-oidc-trust-unverified-email').is(':checked'),
@@ -85,7 +86,14 @@ var ConfigView = View.extend({
                         .append(document.createTextNode('Issuer: '))
                         .append($('<code>').text(resp.issuer || ''))
                         .append(document.createTextNode(
-                            ', ' + resp.jwksKeys + ' signing key(s).'));
+                            ', ' + resp.jwksKeys + ' signing key(s). '))
+                        // Say so explicitly: a provider with no end-session
+                        // endpoint silently makes "sign out of the identity
+                        // provider too" a no-op, which is otherwise invisible.
+                        .append(document.createTextNode(resp.endSessionEndpoint
+                            ? 'Supports RP-initiated logout.'
+                            : 'No logout endpoint advertised, so logout stays '
+                              + 'local to Girder.'));
                 } else {
                     $result.addClass('g-oidc-test-fail').empty()
                         .append($('<b>').text('Connection failed. '))
@@ -121,7 +129,10 @@ var ConfigView = View.extend({
 
         this.$el.html(ConfigViewTemplate({
             config: this.config,
-            redirectUri: `${origin}${apiRoot}/oidc/callback`
+            redirectUri: `${origin}${apiRoot}/oidc/callback`,
+            // Where the provider sends the browser back after an RP-initiated
+            // logout. Mirrors the server's own derivation: the Girder app root.
+            postLogoutRedirectUri: `${origin}${apiRoot.replace(/\/api\/.*$/, '')}/`
         }));
 
         if (!this.breadcrumb) {

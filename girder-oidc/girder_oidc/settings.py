@@ -25,6 +25,13 @@ class PluginSettings:
     INTERNAL_URL = 'oidc.internal_url'
     SCOPES = 'oidc.scopes'
     BUTTON_LABEL = 'oidc.button_label'
+    # Whether signing out of Girder also ends the session at the provider
+    # (OpenID Connect RP-Initiated Logout). With this on, the logout button
+    # sends the browser to the provider's ``end_session_endpoint`` after the
+    # Girder session is destroyed, which signs the user out of every other
+    # application sharing that provider session too. Turn it off to keep logout
+    # local to Girder.
+    PROPAGATE_LOGOUT = 'oidc.propagate_logout'
     AUTO_CREATE_USERS = 'oidc.auto_create_users'
     IGNORE_REGISTRATION_POLICY = 'oidc.ignore_registration_policy'
     # Whether to act on the ``email`` claim when the provider does not assert
@@ -115,6 +122,11 @@ def _defaultScopes():
 @setting_utilities.default(PluginSettings.BUTTON_LABEL)
 def _defaultButtonLabel():
     return 'Log in with OIDC'
+
+
+@setting_utilities.default(PluginSettings.PROPAGATE_LOGOUT)
+def _defaultPropagateLogout():
+    return True
 
 
 @setting_utilities.default(PluginSettings.AUTO_CREATE_USERS)
@@ -210,6 +222,7 @@ def _validateStringSettings(doc):
     PluginSettings.IGNORE_REGISTRATION_POLICY,
     PluginSettings.TRUST_UNVERIFIED_EMAIL,
     PluginSettings.GROUPS_AUTHORITATIVE,
+    PluginSettings.PROPAGATE_LOGOUT,
 })
 def _validateBooleanSettings(doc):
     if not isinstance(doc['value'], bool):

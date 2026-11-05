@@ -17,6 +17,10 @@ self-contained development stack for building and debugging the plugin locally.
   than the one that began it (login CSRF / session fixation).
 - **Session token never in a URL**: the callback hands the web client a
   single-use, 60-second code, which the client redeems for the token.
+- **Single logout**: signing out of Girder also ends the session at the provider
+  (RP-Initiated Logout), so the next login click asks for credentials again
+  instead of being waved straight back in by a provider session that outlived
+  the Girder one. See [Single logout](#single-logout).
 - **Automatic provisioning** of passwordless Girder accounts for new
   identities, with graceful fallbacks when the provider omits name claims
   (`given_name`/`family_name` → `name` → username → email local-part).
@@ -87,6 +91,7 @@ Open the Girder Admin Console → **Plugins** → **OIDC Login**. The settings a
 | **Internal provider URL** | Optional server-to-server base URL (discovery / token / JWKS). Leave blank when it's the same as the issuer; useful behind proxies or in container networks. |
 | **Scopes** | Space-separated OAuth2 scopes (default `openid profile email`). |
 | **Login button label** | Text shown on the OIDC login button. |
+| **Sign out of the identity provider too** | On by default. See [Single logout](#single-logout). Requires the post-logout redirect URI to be registered with the provider. |
 | **Automatically create Girder accounts** | Provision a new passwordless account the first time an identity logs in. |
 | **Ignore closed registration policy** | Allow OIDC account creation even when Girder registration is closed. |
 | **Trust the email claim without `email_verified`** | Off by default. See [Account linking](#account-linking-and-email_verified) — leaving this off is what stops an unverified address from claiming an account. |
@@ -361,6 +366,43 @@ for both token types, so that group values have the same shape. An exchanged
 token is not revoked by a provider logout or a Girder account change; its
 lifetime (minutes) is the window. The endpoint is anonymous: rate-limit it at the
 reverse proxy.
+
+### Single logout
+
+By default, clicking **Log out** in Girder destroys the Girder session and then
+sends the browser to the provider's `end_session_endpoint`. Without this the
+provider session outlives the Girder one, and the next click on the login button
+is signed straight back in with no prompt — which looks like the logout button
+is broken, and on a shared machine means the previous user's session is one
+click away.
+
+This is **single logout**: it ends the provider session, so the user is signed
+out of every other application sharing it, not just Girder. Turn
+**Sign out of the identity provider too** off to keep logout local to Girder.
+
+Two things to set up at the provider:
+
+- Register the **post-logout redirect URI** shown on the config screen (the
+  Girder app root). Providers refuse to redirect to an unregistered URI — in
+  Keycloak it is *Valid post logout redirect URIs* on the client.
+- Nothing else: the endpoint is read from the provider's discovery document.
+  The **Test connection** button reports whether the provider advertises one.
+
+The plugin keeps the ID token from login on the Girder session document, as
+`id_token_hint`, and discards it with that session. The hint is what lets the
+provider end the session without showing its own "do you want to log out?"
+confirmation. It is sent together with `client_id` and the return URI rather
+than instead of them: a Girder session normally outlives the ID token's `exp`,
+and while the spec tells providers to honour an expired hint for a session they
+still recognise, not all of them do — with `client_id` also present, one that
+rejects the stale hint can still identify the client and honour the return URI,
+at the cost of showing its confirmation page.
+
+Logout degrades to Girder-only, without an error, whenever the provider
+advertises no `end_session_endpoint` (dex, for one, implements none), the
+account is a local password account, or discovery cannot be reached. Girder is
+always signed out first, so a provider that is down can never leave the user
+signed in here.
 
 ### Transport
 

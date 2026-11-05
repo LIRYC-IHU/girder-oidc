@@ -137,6 +137,7 @@ def probeProvider(publicUrl, internalUrl=None):
         'authorizationEndpoint': discovery.get('authorization_endpoint'),
         'tokenEndpoint': discovery.get('token_endpoint'),
         'userinfoEndpoint': discovery.get('userinfo_endpoint'),
+        'endSessionEndpoint': discovery.get('end_session_endpoint'),
         'jwksKeys': len(jwks.get('keys', [])),
     }
 
@@ -268,6 +269,50 @@ class OidcClient:
             'code_challenge_method': 'S256',
         }
         return f"{discovery['authorization_endpoint']}?{urlencode(params)}"
+
+    def endSessionUrl(self, idTokenHint=None, postLogoutRedirectUri=None,
+                      state=None):
+        """Build the browser-facing RP-initiated logout URL, or None.
+
+        Returns ``None`` when the provider advertises no ``end_session_endpoint``
+        -- plenty of providers (dex, for one) implement no logout endpoint at
+        all, and that has to degrade to a Girder-only logout rather than fail.
+
+        Unlike the token and JWKS endpoints this one is *not* rewritten to the
+        internal origin: the browser is what goes there, so it needs the public
+        address the provider published.
+        """
+        endpoint = self.discovery.get('end_session_endpoint')
+        if not endpoint:
+            return None
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            raise RestException(
+                'Provider advertised an unusable "end_session_endpoint".',
+                code=502)
+        if urlparse(self.publicUrl).scheme == 'https' and parsed.scheme != 'https':
+            raise RestException(
+                'Provider advertised a plaintext "end_session_endpoint"; '
+                'refusing to send the browser there.', code=502)
+
+        # `client_id` goes alongside `id_token_hint` rather than instead of it.
+        # The hint is stored at login and used whenever the user signs out,
+        # which is usually long after the ID token's `exp`: the spec tells the
+        # provider to honour an expired hint for a session it still recognises,
+        # but not every provider does. With `client_id` present as well, a
+        # provider that rejects the stale hint can still identify the client and
+        # honour `post_logout_redirect_uri` (which it would otherwise refuse),
+        # at the cost of showing its own confirmation page. The spec allows both
+        # and requires the provider to check that they agree.
+        params = {'client_id': self.clientId}
+        if idTokenHint:
+            params['id_token_hint'] = idTokenHint
+        if postLogoutRedirectUri:
+            params['post_logout_redirect_uri'] = postLogoutRedirectUri
+        if state:
+            params['state'] = state
+        separator = '&' if parsed.query else '?'
+        return f'{endpoint}{separator}{urlencode(params)}'
 
     def exchangeCode(self, code, codeVerifier, redirectUri):
         """Exchange an authorization code for tokens (server-side, internal URL)."""

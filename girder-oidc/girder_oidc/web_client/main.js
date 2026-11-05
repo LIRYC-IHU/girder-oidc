@@ -1,6 +1,7 @@
 import './routes';
 
 // Extends and overrides core views.
+import './views/HeaderUserView';
 import './views/LoginView';
 import './views/UserAccountView';
 

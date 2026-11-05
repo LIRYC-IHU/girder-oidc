@@ -72,11 +72,22 @@ class Oidc(Resource):
         self.route('POST', ('configuration', 'test'), self.testConfiguration)
         self.route('GET', ('login',), self.login)
         self.route('GET', ('callback',), self.callback)
+        self.route('GET', ('logout',), self.logout)
         self.route('POST', ('exchange',), self.exchange)
         self.route('POST', ('token_exchange',), self.tokenExchange)
 
     def _redirectUri(self):
         return '/'.join((getApiUrl(), 'oidc', 'callback'))
+
+    def _appRootUrl(self):
+        """Where the provider should send the browser back after logout.
+
+        Derived from ``getApiUrl()`` rather than from ``cherrypy.request.base``
+        so that a Girder mounted under a sub-path keeps that prefix.
+        """
+        parsed = urlparse(getApiUrl())
+        prefix = parsed.path.rsplit('/api/', 1)[0] if '/api/' in parsed.path else ''
+        return urlunparse((parsed.scheme, parsed.netloc, prefix + '/', '', '', ''))
 
     def _isHttps(self):
         # CherryPy proxy tools rewrite request.base but not request.scheme when a
@@ -127,6 +138,7 @@ class Oidc(Resource):
             'internalUrl': settings.get(PluginSettings.INTERNAL_URL),
             'scopes': settings.get(PluginSettings.SCOPES),
             'buttonLabel': settings.get(PluginSettings.BUTTON_LABEL),
+            'propagateLogout': settings.get(PluginSettings.PROPAGATE_LOGOUT),
             'autoCreateUsers': settings.get(PluginSettings.AUTO_CREATE_USERS),
             'ignoreRegistrationPolicy': settings.get(
                 PluginSettings.IGNORE_REGISTRATION_POLICY),
@@ -164,6 +176,10 @@ class Oidc(Resource):
                required=False)
         .param('scopes', 'Space-separated OAuth2 scopes.', required=False)
         .param('buttonLabel', 'Login button label.', required=False)
+        .param('propagateLogout', 'Also end the provider session when the user '
+               'signs out of Girder (RP-initiated logout). This signs them out '
+               'of every other application sharing that provider session.',
+               dataType='boolean', required=False)
         .param('autoCreateUsers', 'Create Girder accounts for new identities.',
                dataType='boolean', required=False)
         .param('ignoreRegistrationPolicy', 'Allow creation even if registration '
@@ -201,7 +217,8 @@ class Oidc(Resource):
                'in minutes.', dataType='integer', required=False)
     )
     def setConfiguration(self, enabled, clientId, clientSecret, publicUrl,
-                         internalUrl, scopes, buttonLabel, autoCreateUsers,
+                         internalUrl, scopes, buttonLabel, propagateLogout,
+                         autoCreateUsers,
                          ignoreRegistrationPolicy, trustUnverifiedEmail,
                          requiredClaim, requiredClaimValue,
                          adminClaim, adminClaimValue, groupsClaim,
@@ -224,6 +241,8 @@ class Oidc(Resource):
             settings.set(PluginSettings.SCOPES, scopes)
         if buttonLabel is not None:
             settings.set(PluginSettings.BUTTON_LABEL, buttonLabel)
+        if propagateLogout is not None:
+            settings.set(PluginSettings.PROPAGATE_LOGOUT, propagateLogout)
         if autoCreateUsers is not None:
             settings.set(PluginSettings.AUTO_CREATE_USERS, autoCreateUsers)
         if ignoreRegistrationPolicy is not None:
@@ -431,6 +450,14 @@ class Oidc(Resource):
         User().verifyLogin(user)
 
         girderToken = Token().createToken(user)
+        # Keep the ID token as a logout hint, on the session it belongs to, so
+        # that it is discarded the moment that session is. Deliberately NOT
+        # under the 'oidc' key: `callback` uses the presence of that key to
+        # recognise its own state tokens, and a session token answering to it
+        # would be consumed (and so destroyed) before failing the browser check.
+        if settings.get(PluginSettings.PROPAGATE_LOGOUT):
+            girderToken['oidcLogout'] = {'idToken': idToken}
+            girderToken = Token().save(girderToken)
         self.sendAuthTokenCookie(token=girderToken)
 
         # Hand the session token to the web client through a single-use code
@@ -445,6 +472,42 @@ class Oidc(Resource):
 
         raise cherrypy.HTTPRedirect(
             _appendQuery(redirect, 'girderOidcCode', str(handoff['_id'])))
+
+    @access.user
+    @disableAuditLog  # the URL carries an id_token_hint: keep it out of the log
+    @autoDescribeRoute(
+        Description('Get the provider URL that also ends the session at the '
+                    'identity provider.')
+        .notes('Returns a null url when logout propagation is disabled, the '
+               'account is not OIDC-linked, or the provider advertises no '
+               'end_session_endpoint. Callers destroy the Girder session first '
+               '(DELETE /user/authentication) and then send the browser here, '
+               'so that a failure to reach the provider still leaves the user '
+               'signed out of Girder.')
+    )
+    def logout(self):
+        if not Setting().get(PluginSettings.PROPAGATE_LOGOUT):
+            return {'url': None}
+
+        user, token = self.getCurrentUser(returnToken=True)
+        # A local account has no provider session to end. Checking the account
+        # rather than the setting alone keeps a password user's logout from
+        # bouncing through an identity provider they never used.
+        if not user.get('oidc'):
+            return {'url': None}
+
+        hint = (token.get('oidcLogout') or {}).get('idToken')
+        try:
+            url = OidcClient().endSessionUrl(
+                idTokenHint=hint, postLogoutRedirectUri=self._appRootUrl())
+        except RestException as e:
+            # Misconfigured or unreachable provider: a Girder-only logout is a
+            # far better outcome than refusing to sign the user out.
+            logger.warning(
+                'oidc: cannot build a provider logout URL (%s); signing out of '
+                'Girder only.', e)
+            return {'url': None}
+        return {'url': url}
 
     @access.public
     @disableAuditLog  # the code is a bearer credential: keep it out of the audit log

@@ -125,6 +125,7 @@ def exchangeAccessToken(accessToken, callerSecret=None):
     if not settings.get(PluginSettings.ENABLED):
         raise RestException('OIDC login is not enabled.', code=403)
     checkCallerSecret(callerSecret)
+
     # Settings forced through GIRDER_SETTING_* bypass the validators: accept
     # strings only, and treat anything else as a misconfiguration.
     def _text(key):
