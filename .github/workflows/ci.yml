@@ -22,9 +22,22 @@ jobs:
         python-version: ['3.10', '3.13']
     services:
       mongo:
-        image: mongo:8.0
+        # 9.0, not 8.0: mongod 8.0 refuses to start on Linux kernels 6.19 and
+        # newer (SERVER-121912, a tcmalloc/rseq ABI violation), which is what
+        # ubuntu-latest runners now ship.
+        image: mongo:9.0
         ports:
           - 27017:27017
+        # Without a healthcheck the runner starts the steps regardless, and a
+        # mongod that died at startup turns into every db-backed test burning a
+        # 20s server-selection timeout -- 48 minutes to report what this makes
+        # the job say during "Initialize containers" instead.
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 6
+          --health-start-period 10s
     steps:
       - uses: actions/checkout@v4
 
